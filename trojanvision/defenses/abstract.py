@@ -119,6 +119,7 @@ class InputFiltering(BackdoorDefense):
         print(f'precision_score : {metrics.precision_score(y_true, y_pred):8.3f}')
         print(f'recall_score    : {metrics.recall_score(y_true, y_pred):8.3f}')
         print(f'accuracy_score  : {metrics.accuracy_score(y_true, y_pred):8.3f}')
+        print(f'roc_auc_score  : {metrics.roc_auc_score(y_true, y_pred):8.3f}')
 
     def get_test_data(self) -> tuple[torch.Tensor, torch.Tensor]:
         r"""Get test data.
@@ -381,8 +382,11 @@ class ModelInspection(BackdoorDefense):
         # todo: parallel to avoid for loop
         file_path = os.path.normpath(os.path.join(
             self.folder_path, self.get_filename() + '.npz'))
+
+        org_target_class = self.attack.target_class
         for label in range(self.model.num_classes):
             print('Class: ', output_iter(label, self.model.num_classes))
+            self.attack.target_class = label
             mark, loss = self.optimize_mark(label, verbose=verbose, **kwargs)
             if verbose:
                 asr, _ = self.attack.validate_fn(indent=4)
@@ -401,6 +405,7 @@ class ModelInspection(BackdoorDefense):
             asr_list.append(asr)
             np.savez(file_path, mark_list=np.stack([mark.detach().cpu().numpy() for mark in mark_list]),
                      loss_list=np.array(loss_list))
+        self.attack.target_class = org_target_class
         print()
         print('Defense results saved at: ' + file_path)
         mark_list_tensor = torch.stack(mark_list)

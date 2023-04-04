@@ -280,7 +280,11 @@ class InputAwareDynamic(BackdoorAttack):
     def attack(self, epochs: int, optimizer: torch.optim.Optimizer,
                lr_scheduler: torch.optim.lr_scheduler._LRScheduler = None,
                validate_interval: int = 1, save: bool = False,
+               validate_fn: Callable[..., tuple[float, float]] = None,
+               writer=None, main_tag: str = 'train', tag: str = '',
                verbose: bool = True, **kwargs):
+        validate_fn = validate_fn or self.validate_fn
+        start_epoch: int = 0
         if verbose:
             print('train mask generator')
         self.mark_generator.requires_grad_(False)
@@ -309,7 +313,7 @@ class InputAwareDynamic(BackdoorAttack):
 
         best_validate_result = (0.0, float('inf'))
         if validate_interval != 0:
-            best_validate_result = self.validate_fn(verbose=verbose)
+            best_validate_result = validate_fn(writer=writer, tag=tag, _epoch=start_epoch, verbose=verbose, **kwargs)
             best_asr = best_validate_result[0]
         for _epoch in range(epochs):
             _epoch += 1
@@ -355,24 +359,26 @@ class InputAwareDynamic(BackdoorAttack):
                 cross_input = x + cross_mask * (cross_mark - x)
                 final_input[trigger_int:trigger_int + cross_int] = cross_input
 
-                # div loss
-                if len(trigger_input) <= len(cross_input):
-                    length = len(trigger_input)
-                    cross_input = cross_input[:length]
-                    cross_mark = cross_mark[:length]
-                    cross_mask = cross_mask[:length]
-                else:
-                    length = len(cross_input)
-                    trigger_input = trigger_input[:length]
-                    trigger_mark = trigger_mark[:length]
-                    trigger_mask = trigger_mask[:length]
-                input_dist: torch.Tensor = (trigger_input - cross_input).flatten(1).norm(p=2, dim=1)
-                mark_dist: torch.Tensor = (trigger_mark - cross_mark).flatten(1).norm(p=2, dim=1) + 1e-5
-
                 loss_ce = self.model.loss(final_input, final_label)
-                loss_div = input_dist.div(mark_dist).mean()
+                loss = loss_ce
+                # div loss
+                loss_div = torch.zeros_like(loss_ce)
+                if len(trigger_input) > 0 and len(cross_input) > 0:
+                    if len(trigger_input) <= len(cross_input):
+                        length = len(trigger_input)
+                        cross_input = cross_input[:length]
+                        cross_mark = cross_mark[:length]
+                        cross_mask = cross_mask[:length]
+                    else:
+                        length = len(cross_input)
+                        trigger_input = trigger_input[:length]
+                        trigger_mark = trigger_mark[:length]
+                        trigger_mask = trigger_mask[:length]
+                    input_dist: torch.Tensor = (trigger_input - cross_input).flatten(1).norm(p=2, dim=1)
+                    mark_dist: torch.Tensor = (trigger_mark - cross_mark).flatten(1).norm(p=2, dim=1) + 1e-5
+                    loss_div = input_dist.div(mark_dist).mean().nan_to_num(0.0)
+                    loss = loss_ce + self.lambda_div * loss_div
 
-                loss = loss_ce + self.lambda_div * loss_div
                 loss.backward()
                 if not self.natural:
                     optimizer.step()
@@ -384,8 +390,18 @@ class InputAwareDynamic(BackdoorAttack):
             if not self.natural:
                 self.model.eval()
             self.mark_generator.eval()
+            if writer is not None:
+                from torch.utils.tensorboard import SummaryWriter
+                assert isinstance(writer, SummaryWriter)
+                writer.add_scalars(main_tag='Loss/' + main_tag,
+                                   tag_scalar_dict={tag: loss},
+                                   global_step=_epoch + start_epoch)
+                # writer.add_scalars(main_tag='Acc/' + main_tag,
+                #                 tag_scalar_dict={tag: acc},
+                #                 global_step=_epoch + start_epoch)
             if validate_interval != 0 and (_epoch % validate_interval == 0 or _epoch == epochs):
-                validate_result = self.validate_fn(verbose=verbose)
+                validate_result = validate_fn(writer=writer, tag=tag, _epoch=_epoch + start_epoch,
+                                              verbose=verbose, **kwargs)
                 cur_asr = validate_result[0]
                 if cur_asr >= best_asr:
                     best_validate_result = validate_result
@@ -399,6 +415,15 @@ class InputAwareDynamic(BackdoorAttack):
         self.mask_generator.requires_grad_(False)
         self.model.requires_grad_(False)
         return best_validate_result
+
+    def get_filename(self, target_class: int = None, **kwargs) -> str:
+        r"""Get filenames for current attack settings."""
+        if target_class is None:
+            target_class = self.target_class
+        _file = 'tar{target:d}'.format(target=target_class)
+        _file = 'tar{target:d} poison{poison:.2f} cross{cross:.2f}'.format(
+            target=target_class, poison=self.poison_percent, cross=self.cross_percent)
+        return _file
 
     def save(self, filename: str = None, **kwargs):
         r"""Save attack results to files."""
@@ -548,13 +573,14 @@ class InputAwareDynamic(BackdoorAttack):
         middle_seq.add_module('bn', nn.BatchNorm2d(num_channels[-1], momentum=0.05))
         middle_seq.add_module('relu', nn.ReLU(inplace=True))
         for i in range(len(num_channels)):
-            up_seq.add_module(f'upsample{3*i+1}', nn.Upsample(scale_factor=2.0))
+            up_seq.add_module(f'upsample{3*i+1}', nn.Upsample(scale_factor=2.0, mode='bilinear'))
             up_seq.add_module(f'conv{3*i+2}', conv3x3(up_channel_list[i], up_channel_list[i]))
             up_seq.add_module(f'bn{3*i+2}', nn.BatchNorm2d(up_channel_list[i], momentum=0.05))
             up_seq.add_module(f'relu{3*i+2}', nn.ReLU(inplace=True))
             up_seq.add_module(f'conv{3*i+3}', conv3x3(up_channel_list[i], up_channel_list[i + 1]))
             up_seq.add_module(f'bn{3*i+3}', nn.BatchNorm2d(up_channel_list[i + 1], momentum=0.05))
-            up_seq.add_module(f'relu{3*i+3}', nn.ReLU(inplace=True))
+            if i != len(num_channels) - 1:
+                up_seq.add_module(f'relu{3*i+3}', nn.ReLU(inplace=True))
         seq.add_module('down', down_seq)
         seq.add_module('middle', middle_seq)
         seq.add_module('up', up_seq)
