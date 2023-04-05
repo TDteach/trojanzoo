@@ -2,6 +2,7 @@ import trojanvision
 import argparse
 import random
 import os
+import re
 
 
 def update_models_info(models_info, name, num=None):
@@ -59,6 +60,8 @@ if __name__ == '__main__':
     trojanvision.trainer.add_argument(parser)
     kwargs = parser.parse_args().__dict__
 
-    n = 1
+    n = 20
     dataset_name = kwargs['dataset_name']
-    train_benign_models(n, folder_path=f'./benign_{dataset_name}', model_name_candidates=['resnet18_comp'], **kwargs)
+    model_name_candidates = ['resnet18_comp', 'vgg13_bn', 'shufflenet2_comp', 'mobilenet_v2_comp']
+    # model_name_candidates = ['resnet50', 'vgg16_bn', 'shufflenet2', 'mobilenet_v3_large']
+    train_benign_models(n, f'./benign_{dataset_name}', model_name_candidates, **kwargs)
