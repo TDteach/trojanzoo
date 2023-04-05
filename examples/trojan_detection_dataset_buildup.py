@@ -16,6 +16,8 @@ def update_models_info(models_info, name, num=None):
 
 def init_models_info(folder_path):
     models_info = dict()
+    if not os.path.exists(folder_path):
+        os.makedirs(folder_path)
     files = [f for f in os.listdir(folder_path) if re.search(r'.+_[0-9]+\.pth$', f)]
     for f in files:
         pre, ext = os.path.splitext(f)
@@ -58,4 +60,5 @@ if __name__ == '__main__':
     kwargs = parser.parse_args().__dict__
 
     n = 1
-    train_benign_models(n, folder_path='./benign', model_name_candidates=['resnet18_comp'], **kwargs)
+    dataset_name = kwargs['dataset_name']
+    train_benign_models(n, folder_path=f'./benign_{dataset_name}', model_name_candidates=['resnet18_comp'], **kwargs)
