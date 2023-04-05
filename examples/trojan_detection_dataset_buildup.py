@@ -1,8 +1,19 @@
 import trojanvision
 import argparse
-import random
 import os
 import re
+import time
+import math
+
+import random
+import numpy as np
+import torch
+
+def set_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
 
 
 def update_models_info(models_info, name, num=None):
@@ -22,8 +33,8 @@ def init_models_info(folder_path):
     files = [f for f in os.listdir(folder_path) if re.search(r'.+_[0-9]+\.pth$', f)]
     for f in files:
         pre, ext = os.path.splitext(f)
-        a = pre.split('_')[-1]
-        name = a[:-1].join('_')
+        a = pre.split('_')
+        name = '_'.join(a[:-1])
         num = int(a[-1])
         update_models_info(models_info, name, num)
     return models_info
@@ -34,14 +45,28 @@ def train_benign_models(
         folder_path: str,
         model_name_candidates: list[str] = ['resnet18_comp'],
         **kwargs):
+
+    if kwargs['seed'] is None:
+        dec, _ = math.modf(time.time())
+        seed = int(dec*1000000000)%(999997)
+        set_seed(seed)
+
     # folder_path = kwargs['folder_path']
     models_info = init_models_info(folder_path)
-    model_name_list = random.choices(model_name_candidates, k=n)
+    n_candi = len(model_name_candidates)
+    model_name_list = np.repeat(model_name_candidates, n//n_candi)
+    if len(model_name_list) < n:
+        rest = np.random.choice(model_name_candidates, n - len(model_name_list))
+        model_name_list = np.concatenate([model_name_list, rest], axis=0)
+    np.random.shuffle(model_name_list)
+    print(model_name_list)
+
     for model_name in model_name_list:
         num = update_models_info(models_info, model_name)
         save_name = f'{model_name}_{num}.pth'
         file_path = os.path.join(folder_path, save_name)
 
+        kwargs['seed'] = (random.randint(1, 1000000)*1234567)%(999997)
         env = trojanvision.environ.create(**kwargs)
         dataset = trojanvision.datasets.create(**kwargs)
         model = trojanvision.models.create(dataset=dataset, **kwargs)
