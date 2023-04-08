@@ -56,10 +56,13 @@ def get_inter_info(dataset, inter_numpy):
 
 def get_inter_probs(dataset, inter_x, folder_path):
     files = [f for f in os.listdir(folder_path) if re.search(r'.+\.pth$', f)]
+    files = sorted(files)
     print(files)
     rst_list = list()
     for f in tqdm(files):
-        print(f)
+
+        if not f.startswith('resnet18_comp'): continue
+
         pre, ext = os.path.splitext(f)
         a = pre.split('_')
         if re.search(r'^[0-9]+', a[-1]):
@@ -79,11 +82,59 @@ def get_inter_probs(dataset, inter_x, folder_path):
                 logits = model(x)
                 probs = torch.softmax(logits, dim=-1)
                 probs_list.append(probs.detach().cpu().numpy())
-        rst_list.append(probs_list)
+        rst_list.append(np.concatenate(probs_list, axis=0))
         del model
 
     with open('probs_list.npy', 'wb') as f:
         np.save(f, np.asarray(rst_list))
+
+
+def main():
+    with open('probs_list.npy', 'rb') as f:
+        data = np.load(f)
+
+
+    with open('inter_info.npy', 'rb') as f:
+        inter_info = np.load(f)
+
+
+    data = np.transpose(data, (1, 2, 0))
+    std_mat = np.std(data, axis=-1)
+    max_std = np.max(std_mat, axis=-1)
+    min_std = np.min(std_mat, axis=-1)
+    print(std_mat.shape)
+    print(std_mat[0])
+    print(max_std)
+    print(max(max_std), min(max_std))
+
+    hist, bins = np.histogram(max_std, bins=100)
+    print(hist)
+    print(bins)
+    print(bins[1]-bins[0])
+    print(bins[2]-bins[1])
+
+    import matplotlib.pyplot as plt
+    # _ = plt.hist(min_std, bins=100)
+
+
+    # a = inter_info[:,2]
+    # a = np.log(a)
+    a = inter_info[:,0]
+    order = np.argsort(a)
+
+    x, y = a[order], max_std[order]
+
+    mm = np.polyfit(x, y, 6)
+    print(mm)
+    yy = np.polyval(mm, x)
+
+
+
+    plt.plot(x, y, '.')
+    plt.plot(x, yy)
+    plt.show()
+
+
 
 
 if __name__ == '__main__':
@@ -112,7 +163,7 @@ if __name__ == '__main__':
     get_inter_info(dataset, zz)
     # '''
 
-    # '''
+    '''
     with open('inter_x.npy', 'rb') as f:
         inter_x = np.load(f)
     dataset = trojanvision.datasets.create(**kwargs)
@@ -122,4 +173,6 @@ if __name__ == '__main__':
     folder_path = f'./benign_{dataset.name}'
     get_inter_probs(dataset, inter_x, folder_path)
     # '''
+
+    main()
 
