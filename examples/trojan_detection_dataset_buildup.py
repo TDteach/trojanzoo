@@ -53,6 +53,24 @@ def train_benign_models(
 
     # folder_path = kwargs['folder_path']
     models_info = init_models_info(folder_path)
+
+    '''
+    files = [f for f in os.listdir(folder_path) if re.search(r'.+_[0-9]+\.pth$', f)]
+    for f in files:
+        if f.startswith('resnet'): continue
+        print(f, models_info['resnet18_comp'])
+
+
+        num = update_models_info(models_info, 'resnet18_comp')
+        print(num)
+        cmmd = 'mv '+os.path.join(folder_path, f)+' '+os.path.join(folder_path, f'resnet18_comp_{num}.pth')
+        print(cmmd)
+
+        os.system(cmmd)
+
+    exit(0)
+    # '''
+
     n_candi = len(model_name_candidates)
     model_name_list = np.repeat(model_name_candidates, n//n_candi)
     if len(model_name_list) < n:
@@ -69,6 +87,7 @@ def train_benign_models(
         kwargs['seed'] = (random.randint(1, 1000000)*1234567)%(999997)
         env = trojanvision.environ.create(**kwargs)
         dataset = trojanvision.datasets.create(**kwargs)
+        kwargs['model_name'] = model_name
         model = trojanvision.models.create(dataset=dataset, **kwargs)
         trainer = trojanvision.trainer.create(dataset=dataset, model=model, **kwargs)
 
@@ -85,8 +104,9 @@ if __name__ == '__main__':
     trojanvision.trainer.add_argument(parser)
     kwargs = parser.parse_args().__dict__
 
-    n = 20
+    n = 99
     dataset_name = kwargs['dataset_name']
-    model_name_candidates = ['resnet18_comp', 'vgg13_bn', 'shufflenet2_comp', 'mobilenet_v2_comp']
-    # model_name_candidates = ['resnet50', 'vgg16_bn', 'shufflenet2', 'mobilenet_v3_large']
+    # model_name_candidates = ['resnet18_comp', 'vgg13_bn', 'shufflenetv2_comp', 'mobilenet_v2_comp']
+    model_name_candidates = ['vgg13_bn', 'shufflenetv2_comp', 'mobilenet_v2_comp']
+    # model_name_candidates = ['resnet50', 'vgg16_bn', 'shufflenetv2', 'mobilenet_v3_large']
     train_benign_models(n, f'./benign_{dataset_name}', model_name_candidates, **kwargs)

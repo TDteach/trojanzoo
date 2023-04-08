@@ -17,8 +17,11 @@ class _ShuffleNetV2(_ImageModel):
         except Exception:
             raise AssertionError(f'model name should be in {ShuffleNetV2.available_models}')
         super().__init__(**kwargs)
+        c_name = name[:10]+'_'+name[10:]
+        if c_name.endswith('_comp'):
+            c_name = c_name[:-5]
         ModelClass: Callable[..., torchvision.models.ShuffleNetV2] = getattr(
-            torchvision.models, name[:16])
+            torchvision.models, c_name)
         _model = ModelClass(num_classes=self.num_classes)
         module_list: list[nn.Module] = []
         if '_comp' in name:
@@ -69,8 +72,7 @@ class ShuffleNetV2(ImageModel):
     .. _ShuffleNet V2\: Practical Guidelines for Efficient CNN Architecture Design:
         https://arxiv.org/abs/1807.11164
     """
-    available_models = ['shufflenetv2', 'shufflenetv2_comp',
-                        'shufflenetv2_x0_5', 'shufflenetv2_x1_0',
+    available_models = ['shufflenetv2_x0_5', 'shufflenetv2_x1_0',
                         'shufflenetv2_x1_5', 'shufflenetv2_x2_0',
                         'shufflenetv2_x0_5_comp', 'shufflenetv2_x1_0_comp',
                         'shufflenetv2_x1_5_comp', 'shufflenetv2_x2_0_comp', ]

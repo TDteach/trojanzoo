@@ -80,6 +80,7 @@ def get_inter_probs(dataset, inter_x, folder_path):
                 probs = torch.softmax(logits, dim=-1)
                 probs_list.append(probs.detach().cpu().numpy())
         rst_list.append(probs_list)
+        del model
 
     with open('probs_list.npy', 'wb') as f:
         np.save(f, np.asarray(rst_list))
@@ -95,6 +96,7 @@ if __name__ == '__main__':
     env = trojanvision.environ.create(**kwargs)
 
     '''
+    print(model_name_list)
     dataset = trojanvision.datasets.create(**kwargs)
     get_inter_data(dataset)
     # '''
@@ -110,12 +112,14 @@ if __name__ == '__main__':
     get_inter_info(dataset, zz)
     # '''
 
-    '''
+    # '''
     with open('inter_x.npy', 'rb') as f:
         inter_x = np.load(f)
     dataset = trojanvision.datasets.create(**kwargs)
     print(dataset.name)
-    folder_path = f'./data/model/image/{dataset.name}'
+
+    # folder_path = f'./data/model/image/{dataset.name}'
+    folder_path = f'./benign_{dataset.name}'
     get_inter_probs(dataset, inter_x, folder_path)
     # '''
 
