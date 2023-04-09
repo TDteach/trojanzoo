@@ -9,9 +9,11 @@ import random
 import numpy as np
 import torch
 from tqdm import tqdm
+import matplotlib.pyplot as plt
+from scipy import stats
 
 
-def savitzky_golay(y, window_size, order, deriv=0, rate=1):
+def savitzky_golay(y, window_size, order, deriv=0, rate=1, return_err=False):
     r"""Smooth (and optionally differentiate) data with a Savitzky-Golay filter.
     The Savitzky-Golay filter removes high frequency noise from data.
     It has the advantage of preserving the original shape and
@@ -63,9 +65,9 @@ def savitzky_golay(y, window_size, order, deriv=0, rate=1):
     from math import factorial
 
     try:
-        window_size = np.abs(np.int(window_size))
-        order = np.abs(np.int(order))
-    except ValueError, msg:
+        window_size = np.abs(int(window_size))
+        order = np.abs(int(order))
+    except ValueError:
         raise ValueError("window_size and order have to be of type int")
     if window_size % 2 != 1 or window_size < 1:
         raise TypeError("window_size size must be a positive odd number")
@@ -75,13 +77,24 @@ def savitzky_golay(y, window_size, order, deriv=0, rate=1):
     half_window = (window_size - 1) // 2
     # precompute coefficients
     b = np.mat([[k ** i for i in order_range] for k in range(-half_window, half_window + 1)])
+    b = b.astype(np.float64)
     m = np.linalg.pinv(b).A[deriv] * rate ** deriv * factorial(deriv)
     # pad the signal at the extremes with
     # values taken from the signal itself
     firstvals = y[0] - np.abs(y[1:half_window + 1][::-1] - y[0])
     lastvals = y[-1] + np.abs(y[-half_window - 1:-1][::-1] - y[-1])
     y = np.concatenate((firstvals, y, lastvals))
-    return np.convolve(m[::-1], y, mode='valid')
+    ry = np.convolve(m[::-1], y, mode='valid')
+    if not return_err:
+        return ry
+
+    err_list = list()
+    for i in range(len(ry)):
+        ll, rr = max(0,i-half_window), min(len(y), i+half_window+1)
+        err = np.mean((y[ll:rr] - ry[i])**2)
+        err_list.append(np.sqrt(err))
+    err_list = np.asarray(err_list)
+    return ry, err_list
 
 def get_inter_data(dataset):
     for data in dataset.loader['train']:
@@ -161,6 +174,45 @@ def get_inter_probs(dataset, inter_x, folder_path):
         np.save(f, np.asarray(rst_list))
 
 
+def fill_nan(a):
+    for i in range(1, len(a)):
+        if np.isnan(a[i]):
+            a[i] = a[i-1]
+    return a
+
+
+def remove_outliers(x, y, n_bins=50, keep_ratio='std', min_ins=2):
+    yyy, xxx, bid = stats.binned_statistic(x, y, 'mean', bins=n_bins)
+    del_list = list()
+    idx = np.arange(len(x))
+    for i in range(n_bins):
+        s = bid == (i+1)
+        jj = idx[s]
+        if np.sum(s) < min_ins: continue
+        zy = y[s]
+        zz = np.abs(zy - yyy[i])
+        zz = np.sort(zz)
+        if keep_ratio=='std':
+            thr = np.std(zy)
+        else:
+            thr = zz[int(len(zz)*keep_ratio)]
+        thr = np.std(zy)
+        for j in jj:
+            if abs(y[j]-yyy[i]) > thr:
+                del_list.append(j)
+    nx, ny = list(), list()
+    del_list = sorted(del_list)
+    print('remove {} outliers'.format(len(del_list)))
+    for i, (x_, y_) in enumerate(zip(x,y)):
+        if len(del_list) > 0 and i == del_list[0]:
+            del_list.pop(0)
+            continue
+        nx.append(x_)
+        ny.append(y_)
+
+    return nx, ny
+
+
 def main():
     with open('probs_list.npy', 'rb') as f:
         data = np.load(f)
@@ -169,41 +221,55 @@ def main():
     with open('inter_info.npy', 'rb') as f:
         inter_info = np.load(f)
 
-
     data = np.transpose(data, (1, 2, 0))
     std_mat = np.std(data, axis=-1)
     max_std = np.max(std_mat, axis=-1)
     min_std = np.min(std_mat, axis=-1)
-    print(std_mat.shape)
-    print(std_mat[0])
-    print(max_std)
+    mean_std = np.mean(std_mat, axis=-1)
     print(max(max_std), min(max_std))
 
-    hist, bins = np.histogram(max_std, bins=100)
-    print(hist)
-    print(bins)
-    print(bins[1]-bins[0])
-    print(bins[2]-bins[1])
 
-    import matplotlib.pyplot as plt
-    # _ = plt.hist(min_std, bins=100)
+    a = inter_info[:,2]
+    a = np.log(a)
+    #a = inter_info[:,0]
 
-
-    # a = inter_info[:,2]
-    # a = np.log(a)
-    a = inter_info[:,0]
     order = np.argsort(a)
 
     x, y = a[order], max_std[order]
+    # x, y = a[order], mean_std[order]
 
-    mm = np.polyfit(x, y, 6)
-    print(mm)
-    yy = np.polyval(mm, x)
+    x, y = remove_outliers(x, y, n_bins=50)
+
+    # mm = np.polyfit(x, y, 6)
+    # yy = np.polyval(mm, x)
+    # yy = savitzky_golay(y, window_size=1007, order=2)
 
 
 
+    '''
+    ws = 501
+    yyy, err = savitzky_golay(y, window_size=ws, order=1, return_err=True)
     plt.plot(x, y, '.')
-    plt.plot(x, yy)
+    plt.plot(x, yyy)
+    plt.errorbar(x[::200],yyy[::200],err[::200],marker='^')
+    # '''
+
+    # '''
+    n_bins = 200
+    yy, xx, _ = stats.binned_statistic(x, y, 'mean', bins=n_bins)
+    ss, _, _ = stats.binned_statistic(x, y, 'std', bins=n_bins)
+    yy = fill_nan(yy)
+    ss = fill_nan(ss)
+    xxx = np.asarray([(xx[i]+xx[i+1])/2 for i in range(len(xx)-1)])
+
+    ws = 21
+    yyy = savitzky_golay(yy, window_size=ws, order=1)
+    plt.plot(x, y, '.')
+    plt.plot(xxx, yy)
+    intl = 7
+    plt.errorbar(xxx[::intl],yyy[::intl],ss[::intl],marker='^')
+    # '''
+
     plt.show()
 
 
@@ -219,7 +285,6 @@ if __name__ == '__main__':
     env = trojanvision.environ.create(**kwargs)
 
     '''
-    print(model_name_list)
     dataset = trojanvision.datasets.create(**kwargs)
     get_inter_data(dataset)
     # '''
