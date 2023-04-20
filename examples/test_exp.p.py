@@ -11,6 +11,7 @@ import torch
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 from scipy import stats
+import pickle
 
 
 def savitzky_golay(y, window_size, order, deriv=0, rate=1, return_err=False):
@@ -96,21 +97,84 @@ def savitzky_golay(y, window_size, order, deriv=0, rate=1, return_err=False):
     err_list = np.asarray(err_list)
     return ry, err_list
 
-def get_inter_data(dataset):
+
+def get_GMM_for_model(dataset, model):
+    name = dataset.name
+
+    fm_list = list()
     for data in dataset.loader['train']:
-        data0 = data
-        break
-    X = dataset.get_data(data0)[0]
+        x = dataset.get_data(data)[0]
+        final_fm = model.get_final_fm(x)
+        fm_list.append(final_fm.detach().cpu().numpy())
+    fm_list = np.concatenate(fm_list, axis=0)
+    print(fm_list.shape, model.num_classes)
+
+    X = fm_list
+    from sklearn.mixture import GaussianMixture
+    gm = GaussianMixture(n_components=model.num_classes, random_state=0, max_iter=500, verbose=2).fit(X)
+    print(gm.means_.shape)
+
+    return gm
+
+
+
+
+def get_inter_data(dataset):
+    name = dataset.name
+
     x_list = list()
-    for i in range(100):
-        inter = torch.rand([len(X), 1, 1, 1], device='cuda')
-        x_list.append((X * inter).detach().cpu().numpy())
-    x_numpy = np.asarray(x_list)
-    with open('inter_x.npy', 'wb') as f:
-        np.save(f, x_numpy)
-    print('inter data saved to inter_x.npy')
+    for data in dataset.loader['train']:
+        x = dataset.get_data(data)[0]
+        anchors = torch.rand(x.shape, device='cuda')
+        inter = torch.rand([len(x), 1, 1, 1], device='cuda')
+        nx = anchors * (1-inter) + x * inter
+        x_list.append(nx.detach().cpu().numpy())
+    pp = f'{name}_inter_x.pkl'
+    with open(pp, 'wb') as f:
+        pickle.dump(x_list, f)
+    print('inter data saved to', pp)
 
 def get_inter_info(dataset, inter_numpy):
+    name = dataset.name
+
+    print('gather all data')
+    st_time = time.time()
+    a = list()
+    for data in dataset.loader['train']:
+        x = dataset.get_data(data)[0]
+        x = torch.reshape(x, (len(x), -1))
+        a.append(x.detach().cpu().numpy())
+    data = np.concatenate(a, axis=0)
+    ed_time = time.time()
+    print(ed_time - st_time)
+
+    from fast_laplacian_kde import kde
+
+    bandwidth = 1
+
+    rst = list()
+    for z in tqdm(inter_numpy):
+        p = kde(z, data, bandwidth)
+        try:
+            lp = math.log(p)
+        except:
+            lp = -np.inf
+        print(p, lp)
+        rst.append(-lp)
+    rst = np.reshape(rst, [len(rst), 1])
+    print(rst.shape)
+
+    '''
+    with open("inter_info.npy", 'rb') as f:
+        inter_info = np.load(f)
+
+    inter_info = np.concatenate([inter_info, rst], axis=1)
+    print(inter_info.shape)
+    '''
+
+    with open(f"{name}_inter_info.npy", 'wb') as f:
+        np.save(f, np.asarray(rst))
+    exit(0)
 
     info_list = list()
     with torch.no_grad():
@@ -118,7 +182,6 @@ def get_inter_info(dataset, inter_numpy):
             z = torch.from_numpy(z).to('cuda')
             dis_list = list()
 
-            st_time = time.time()
             for data in dataset.loader['train']:
                 x = dataset.get_data(data)[0]
                 x = torch.reshape(x, (len(x), -1))
@@ -126,9 +189,6 @@ def get_inter_info(dataset, inter_numpy):
                 dis = torch.norm(dis, dim=-1)
                 dis_list.append(dis.detach().cpu().numpy())
             dis_list = np.concatenate(dis_list, axis=0)
-            ed_time = time.time()
-            # print(ed_time - st_time)
-            # print(len(dis_list))
             info = {
                 'min': np.min(dis_list),
                 'avg': np.mean(dis_list),
@@ -140,13 +200,14 @@ def get_inter_info(dataset, inter_numpy):
         np.save(f, np.asarray(info_list))
 
 def get_inter_probs(dataset, inter_x, folder_path):
+    name = dataset.name
+
     files = [f for f in os.listdir(folder_path) if re.search(r'.+\.pth$', f)]
     files = sorted(files)
-    print(files)
     rst_list = list()
     for f in tqdm(files):
 
-        if not f.startswith('resnet18_comp'): continue
+        # if not f.startswith('resnet18_comp'): continue
 
         pre, ext = os.path.splitext(f)
         a = pre.split('_')
@@ -159,18 +220,22 @@ def get_inter_probs(dataset, inter_x, folder_path):
         path = os.path.join(folder_path, f)
         model.load(path)
 
+        gm = get_GMM_for_model(dataset, model)
+        pp = f'name_{f}_gm.pkl'
+        with open(pp, 'wb') as fh:
+            pickle.dump(gm, fh)
+
         probs_list = list()
         model.eval()
         with torch.no_grad():
             for x in inter_x:
                 x = torch.from_numpy(x).to('cuda')
-                logits = model(x)
-                probs = torch.softmax(logits, dim=-1)
+                probs = model.get_prob(x)
                 probs_list.append(probs.detach().cpu().numpy())
         rst_list.append(np.concatenate(probs_list, axis=0))
         del model
 
-    with open('probs_list.npy', 'wb') as f:
+    with open(f'{name}_probs_list.npy', 'wb') as f:
         np.save(f, np.asarray(rst_list))
 
 
@@ -196,7 +261,6 @@ def remove_outliers(x, y, n_bins=50, keep_ratio='std', min_ins=2):
             thr = np.std(zy)
         else:
             thr = zz[int(len(zz)*keep_ratio)]
-        thr = np.std(zy)
         for j in jj:
             if abs(y[j]-yyy[i]) > thr:
                 del_list.append(j)
@@ -213,32 +277,55 @@ def remove_outliers(x, y, n_bins=50, keep_ratio='std', min_ins=2):
     return nx, ny
 
 
-def main():
-    with open('probs_list.npy', 'rb') as f:
+def remove_inf_nan(x, y):
+    nx, ny = list(), list()
+    for _x, _y in zip(x,y):
+        if any([np.isinf(_x), np.isinf(_y), np.isnan(_x), np.isnan(_y)]):
+            continue
+        nx.append(_x)
+        ny.append(_y)
+    return np.asarray(nx), np.asarray(ny)
+
+
+def main(dataset_name):
+    name = dataset_name
+    with open(f'{name}_probs_list.npy', 'rb') as f:
         data = np.load(f)
 
-
-    with open('inter_info.npy', 'rb') as f:
+    with open(f'{name}_inter_info.npy', 'rb') as f:
         inter_info = np.load(f)
+
+    print(inter_info.shape)
 
     data = np.transpose(data, (1, 2, 0))
     std_mat = np.std(data, axis=-1)
+    mean_mat = np.mean(data, axis=-1)
     max_std = np.max(std_mat, axis=-1)
     min_std = np.min(std_mat, axis=-1)
     mean_std = np.mean(std_mat, axis=-1)
+    a_std = std_mat[:, 3]
     print(max(max_std), min(max_std))
 
+    '''
+    a = np.repeat(inter_info, std_mat.shape[1], axis=1)
+    b = np.log(mean_mat)
+    x = (a-b).flatten()
+    y = std_mat.flatten()
+    '''
 
-    a = inter_info[:,2]
-    a = np.log(a)
-    #a = inter_info[:,0]
+    a = inter_info[:,0]
+    # a = np.log(a)
 
-    order = np.argsort(a)
+    # x, y = a, max_std
+    x, y = a, mean_std
 
-    x, y = a[order], max_std[order]
-    # x, y = a[order], mean_std[order]
+    x, y = remove_inf_nan(x, y)
 
-    x, y = remove_outliers(x, y, n_bins=50)
+    order = np.argsort(x)
+    x, y = x[order], y[order]
+
+    # x, y = remove_outliers(x, y, n_bins=100, keep_ratio=0.9)
+    x, y = remove_outliers(x, y, n_bins=100)
 
     # mm = np.polyfit(x, y, 6)
     # yy = np.polyval(mm, x)
@@ -286,30 +373,39 @@ if __name__ == '__main__':
 
     '''
     dataset = trojanvision.datasets.create(**kwargs)
+    print('get inter data for', dataset.name)
     get_inter_data(dataset)
     # '''
 
     '''
-    with open('inter_x.npy', 'rb') as f:
-        inter_x = np.load(f)
+    dataset = trojanvision.datasets.create(**kwargs)
+    print('get inter info for', dataset.name)
+    name = dataset.name
+    with open(f'{name}_inter_x.pkl', 'rb') as f:
+        inter_x = pickle.load(f)
     z = np.concatenate(inter_x, axis=0)
     print(z.shape)
     zz = np.reshape(z, (len(z), -1))
     print(zz.shape)
-    dataset = trojanvision.datasets.create(**kwargs)
     get_inter_info(dataset, zz)
     # '''
 
-    '''
-    with open('inter_x.npy', 'rb') as f:
-        inter_x = np.load(f)
+    # '''
     dataset = trojanvision.datasets.create(**kwargs)
+    print('get inter probs for', dataset.name)
+    name = dataset.name
+    with open(f'{name}_inter_x.pkl', 'rb') as f:
+        inter_x = pickle.load(f)
     print(dataset.name)
 
     # folder_path = f'./data/model/image/{dataset.name}'
-    folder_path = f'./benign_{dataset.name}'
+    folder_path = f'./benign_{name}'
     get_inter_probs(dataset, inter_x, folder_path)
     # '''
 
-    main()
+    '''
+    dataset = trojanvision.datasets.create(**kwargs)
+    print('draw figure for', dataset.name)
+    main(dataset.name)
+    # '''
 

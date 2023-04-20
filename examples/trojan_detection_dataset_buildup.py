@@ -106,7 +106,6 @@ if __name__ == '__main__':
 
     n = 99
     dataset_name = kwargs['dataset_name']
-    # model_name_candidates = ['resnet18_comp', 'vgg13_bn', 'shufflenetv2_comp', 'mobilenet_v2_comp']
-    model_name_candidates = ['vgg13_bn', 'shufflenetv2_x1_0_comp', 'mobilenet_v2_comp']
-    # model_name_candidates = ['resnet50', 'vgg16_bn', 'shufflenetv2_x2_0', 'mobilenet_v3_large']
+    # model_name_candidates = ['resnet18_comp', 'vgg13_bn', 'shufflenetv2_x1_0_comp', 'mobilenet_v2_comp']
+    model_name_candidates = ['resnet50', 'vgg16_bn', 'shufflenetv2_x2_0', 'mobilenet_v3_large']
     train_benign_models(n, f'./benign_{dataset_name}', model_name_candidates, **kwargs)
