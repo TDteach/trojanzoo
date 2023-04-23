@@ -13,6 +13,8 @@ import matplotlib.pyplot as plt
 from scipy import stats
 import pickle
 
+from scipy.special import logsumexp
+
 
 def savitzky_golay(y, window_size, order, deriv=0, rate=1, return_err=False):
     r"""Smooth (and optionally differentiate) data with a Savitzky-Golay filter.
@@ -98,7 +100,7 @@ def savitzky_golay(y, window_size, order, deriv=0, rate=1, return_err=False):
     return ry, err_list
 
 
-def get_GMM_for_model(dataset, model):
+def get_GMM_for_model(dataset, model, covariance_type='tied'):
     name = dataset.name
 
     fm_list = list()
@@ -111,7 +113,8 @@ def get_GMM_for_model(dataset, model):
 
     X = fm_list
     from sklearn.mixture import GaussianMixture
-    gm = GaussianMixture(n_components=model.num_classes, random_state=0, max_iter=500, verbose=2).fit(X)
+    # gm = GaussianMixture(n_components=model.num_classes, random_state=0, max_iter=500, verbose=2, tol=1e-4, covariance_type='diag').fit(X)
+    gm = GaussianMixture(n_components=model.num_classes, random_state=0, max_iter=500, verbose=2, tol=1e-4, covariance_type=covariance_type).fit(X)
     print(gm.means_.shape)
 
     return gm
@@ -199,6 +202,40 @@ def get_inter_info(dataset, inter_numpy):
     with open("inter_info.npy", 'wb') as f:
         np.save(f, np.asarray(info_list))
 
+
+
+def get_GMM_models(dataset, folder_path, cov_type='tied'):
+    name = dataset.name
+
+    files = [f for f in os.listdir(folder_path) if re.search(r'.+\.pth$', f)]
+    files = sorted(files)
+    rst_list = list()
+    for f in tqdm(files):
+
+        pre, ext = os.path.splitext(f)
+        a = pre.split('_')
+        if re.search(r'^[0-9]+', a[-1]):
+            model_name = '_'.join(a[:-1])
+        else:
+            model_name = pre
+        kwargs['model_name'] = model_name
+        model = trojanvision.models.create(dataset=dataset, **kwargs)
+        path = os.path.join(folder_path, f)
+        model.load(path)
+
+        model.eval()
+        with torch.no_grad():
+            gm = get_GMM_for_model(dataset, model, cov_type)
+        pp = f'{cov_type}_{f}_gm.pkl'
+        with open(pp, 'wb') as fh:
+            pickle.dump(gm, fh)
+
+        del model
+
+
+
+
+
 def get_inter_probs(dataset, inter_x, folder_path):
     name = dataset.name
 
@@ -220,11 +257,6 @@ def get_inter_probs(dataset, inter_x, folder_path):
         path = os.path.join(folder_path, f)
         model.load(path)
 
-        gm = get_GMM_for_model(dataset, model)
-        pp = f'name_{f}_gm.pkl'
-        with open(pp, 'wb') as fh:
-            pickle.dump(gm, fh)
-
         probs_list = list()
         model.eval()
         with torch.no_grad():
@@ -237,6 +269,56 @@ def get_inter_probs(dataset, inter_x, folder_path):
 
     with open(f'{name}_probs_list.npy', 'wb') as f:
         np.save(f, np.asarray(rst_list))
+
+
+
+def get_inter_GMM_info(dataset, inter_x, folder_path, cov_type='tied'):
+    name = dataset.name
+
+    files = [f for f in os.listdir(folder_path) if re.search(r'.+\.pth$', f)]
+    files = sorted(files)
+    rst_list = list()
+    for f in tqdm(files):
+
+        # if not f.startswith('resnet18_comp'): continue
+
+        pre, ext = os.path.splitext(f)
+        a = pre.split('_')
+        if re.search(r'^[0-9]+', a[-1]):
+            model_name = '_'.join(a[:-1])
+        else:
+            model_name = pre
+        kwargs['model_name'] = model_name
+        model = trojanvision.models.create(dataset=dataset, **kwargs)
+        path = os.path.join(folder_path, f)
+        model.load(path)
+
+        pp = f'{name}_{cov_type}_gm/{cov_type}_{f}_gm.pkl'
+        try:
+            with open(pp, 'rb') as fh:
+                gm = pickle.load(fh)
+        except:
+            continue
+
+        print(f)
+
+        probs_list = list()
+        model.eval()
+        with torch.no_grad():
+            for x in inter_x:
+                x = torch.from_numpy(x).to('cuda')
+                final_fm = model.get_final_fm(x).detach().cpu().numpy()
+                probs = gm.score_samples(final_fm)
+                # print(np.max(probs), np.min(probs))
+                # print(probs.shape)
+                probs_list.append(probs)
+        rst_list.append(np.concatenate(probs_list, axis=0))
+        del model
+
+    with open(f"{name}_inter_{cov_type}_GMM_info.npy", 'wb') as f:
+        np.save(f, np.asarray(rst_list))
+
+
 
 
 def fill_nan(a):
@@ -285,6 +367,68 @@ def remove_inf_nan(x, y):
         nx.append(_x)
         ny.append(_y)
     return np.asarray(nx), np.asarray(ny)
+
+
+def draw_gmm_results(dataset_name, cov_type='tied'):
+    name = dataset_name
+    with open(f'{name}_inter_{cov_type}_GMM_info.npy', 'rb') as f:
+        data = np.load(f)
+
+    with open(f'{name}_inter_info.npy', 'rb') as f:
+        inter_info = np.load(f)
+
+    a = inter_info[:,0]
+    data = np.transpose(data, (1, 0))
+
+    if False:
+        a = -a-logsumexp(-a)
+        n, m = data.shape[:2]
+        for j in range(m):
+            data[:, j] -= logsumexp(data[:,j])
+        mean_ary = []
+        for i in range(n):
+            avg = logsumexp(data[i,:])-np.log(m)
+            mean_ary.append(avg)
+
+        x, y = a, mean_ary
+        x, y = remove_inf_nan(x, y)
+
+        order = np.argsort(x)
+        x, y = x[order], y[order]
+
+        x, y = remove_outliers(x, y, n_bins=100)
+    else:
+        mean_ary = np.mean(data, axis=-1)
+        x, y = a, -mean_ary
+        x, y = remove_inf_nan(x, y)
+
+        order = np.argsort(x)
+        x, y = x[order], y[order]
+
+        x, y = remove_outliers(x, y, n_bins=100)
+        x = (x-np.min(x))/(np.max(x)-np.min(x))
+        y = (y-np.min(y))/(np.max(y)-np.min(y))
+
+
+    n_bins = 200
+    yy, xx, _ = stats.binned_statistic(x, y, 'mean', bins=n_bins)
+    ss, _, _ = stats.binned_statistic(x, y, 'std', bins=n_bins)
+    yy = fill_nan(yy)
+    ss = fill_nan(ss)
+    xxx = np.asarray([(xx[i]+xx[i+1])/2 for i in range(len(xx)-1)])
+
+    ws = 21
+    yyy = savitzky_golay(yy, window_size=ws, order=1)
+    plt.plot(x, y, '.')
+    plt.plot(xxx, yy)
+    intl = 7
+    plt.errorbar(xxx[::intl],yyy[::intl],ss[::intl],marker='^')
+
+    plt.show()
+
+
+
+
 
 
 def main(dataset_name):
@@ -390,7 +534,27 @@ if __name__ == '__main__':
     get_inter_info(dataset, zz)
     # '''
 
+    '''
+    dataset = trojanvision.datasets.create(**kwargs)
+    print('get GMM models for', dataset.name)
+    name = dataset.name
+    folder_path = f'./benign_{name}'
+    get_GMM_models(dataset, folder_path)
     # '''
+
+    '''
+    dataset = trojanvision.datasets.create(**kwargs)
+    print('get inter GMM info for', dataset.name)
+    name = dataset.name
+    with open(f'{name}_inter_x.pkl', 'rb') as f:
+        inter_x = pickle.load(f)
+    print(dataset.name)
+
+    folder_path = f'./benign_{name}'
+    get_inter_GMM_info(dataset, inter_x, folder_path)
+    # '''
+
+    '''
     dataset = trojanvision.datasets.create(**kwargs)
     print('get inter probs for', dataset.name)
     name = dataset.name
@@ -402,6 +566,13 @@ if __name__ == '__main__':
     folder_path = f'./benign_{name}'
     get_inter_probs(dataset, inter_x, folder_path)
     # '''
+
+    '''
+    dataset = trojanvision.datasets.create(**kwargs)
+    print('draw GMM figure for', dataset.name)
+    draw_gmm_results(dataset.name)
+    # '''
+
 
     '''
     dataset = trojanvision.datasets.create(**kwargs)
