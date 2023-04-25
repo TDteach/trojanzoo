@@ -214,7 +214,7 @@ def get_model_name_from_path(f):
 
     return model_name
 
-def load_model_from_path(f, folder_path, dataset):
+def load_model_from_path(f, folder_path, dataset, kwargs):
     model_name = get_model_name_from_path(f)
     kwargs['model_name'] = model_name
     model = trojanvision.models.create(dataset=dataset, **kwargs)
@@ -229,7 +229,7 @@ def get_GMM_models(dataset, folder_path, cov_type='tied'):
     files = [f for f in os.listdir(folder_path) if re.search(r'.+\.pth$', f)]
     files = sorted(files)
     for f in tqdm(files):
-        model = load_model_from_path(f, folder_path, dataset)
+        model = load_model_from_path(f, folder_path, dataset, kwargs)
         model.eval()
         with torch.no_grad():
             gm = get_GMM_for_model(dataset, model, cov_type)
@@ -398,7 +398,7 @@ def compare_infos(dataset, folder_path, cov_type='tied'):
         n = len(p_list)
         for i in range(n):
             print(p_list[i])
-            model = load_model_from_path(p_list[i], folder_path, dataset)
+            model = load_model_from_path(p_list[i], folder_path, dataset, kwargs)
             model.eval()
 
             #for na, v in model._model.classifier.named_parameters():
