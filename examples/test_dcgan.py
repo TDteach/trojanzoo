@@ -10,7 +10,9 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
+import torchvision.transforms as transforms
 
+import pickle
 import numpy as np
 
 from test_exp import load_model_from_path
@@ -22,6 +24,7 @@ params = {
     'ngf': 64,
     'lr': 0.0002,
     'beta1': 0.5,
+    'rand_beta': 0.2,
     'n_epochs': 100,
 }
 
@@ -213,18 +216,43 @@ class Generator(nn.Module):
 def train_DCGAN_models(dataset, forder_path):
     name = dataset.name
 
+    md_type = 'dcgan'
+    # md_type = 'vaedecoder'
+
     files = [f for f in os.listdir(folder_path) if re.search(r'.+\.pth$', f)]
     files = sorted(files)
-    for f in tqdm(files):
-        if not f.startswith('resnet'): continue
-        model = load_model_from_path(f, folder_path, dataset, kwargs)
+    for fn in tqdm(files):
+        if not fn.startswith('resnet'): continue
+
+        pp = f'{name}_{fn}_dcgan.bin'
+        if os.path.exists(pp): continue
+
+        print(fn)
+
+        model = load_model_from_path(fn, folder_path, dataset, kwargs)
         model.eval()
 
-        netG = Generator(params)
+        if md_type == 'dcgan':
+            netG = Generator(params)
+        elif md_type == 'vaedecoder':
+            netG = VAEDecoder(
+                out_channels=params['nc'],
+                latent_channels=params['nz'],
+                residual_channels=params['ngf'],
+                strides=[2, 2, 2, 2, 2],
+            )
+        else:
+            raise 'Unknown model type'
+
         optimG = optim.Adam(netG.parameters(), lr=params['lr'], betas=(params['beta1'], 0.999))
+        # optimG = optim.SGD(netG.parameters(), lr=1e-2)
 
         netG.cuda()
         netG.train()
+
+        rand_beta = params['rand_beta']
+        mixup = True
+        randaug = True
 
         bar = tqdm(range(params['n_epochs']))
         for epoch in bar:
@@ -232,17 +260,22 @@ def train_DCGAN_models(dataset, forder_path):
             for data in dataset.loader['train']:
                 x = dataset.get_data(data)[0]
 
-                gamma = np.random.beta(0.5, 0.5, x.size(0))
-                gamma_tensor = torch.from_numpy(gamma).float().cuda().reshape(-1, 1, 1, 1)
-                indices = torch.randperm(x.size(0), device='cuda', dtype=torch.long)
-                perm_x = x[indices]
-                nx = x * gamma_tensor + perm_x * (1 - gamma_tensor)
+                if mixup:
+                    gamma = np.random.beta(rand_beta, rand_beta, x.size(0))
+                    gamma_tensor = torch.from_numpy(gamma).float().cuda().reshape(-1, 1, 1, 1)
+                    indices = torch.randperm(x.size(0), device='cuda', dtype=torch.long)
+                    perm_x = x[indices]
+                    nx = x * gamma_tensor + perm_x * (1 - gamma_tensor)
+                else:
+                    nx = x
 
-                '''
-                anchors = torch.rand(x.shape, device='cuda')
-                inter = torch.rand([len(x), 1, 1, 1], device='cuda')
-                nx = anchors * (1 - inter) + x * inter
-                '''
+                if randaug:
+                    anchors = torch.rand(nx.shape, device='cuda')
+                    inter = np.random.beta(rand_beta*10, rand_beta, x.size(0))
+                    inter_tensor = torch.from_numpy(gamma).float().cuda().reshape(-1, 1, 1, 1)
+                    nx = nx * inter_tensor + anchors * (1 - inter_tensor)
+                else:
+                    nx = nx
 
                 z = model.get_final_fm(nx)
                 z_in = z.view(z.shape[0], z.shape[1], 1, 1)
@@ -250,6 +283,11 @@ def train_DCGAN_models(dataset, forder_path):
                 gx = netG(z_in.data)
 
                 loss = torch.square(gx - nx.data).sum((1, 2, 3)).mean()
+
+                optimG.zero_grad()
+                loss.backward()
+                optimG.step()
+
                 lv = loss.item()
                 if loss_ema is None:
                     loss_ema = lv
@@ -258,11 +296,61 @@ def train_DCGAN_models(dataset, forder_path):
 
                 bar.set_description(f'epoch {epoch}: loss={lv:.3f}')
 
-                optimG.zero_grad()
-                loss.backward()
-                optimG.step()
-        exit(0)
+        pp = f'{name}_{fn}_{md_type}.bin'
+        torch.save(netG, pp)
+        del netG
+        del model
 
+
+def measure_wasserstein(dataset, folder_path):
+
+    name = dataset.name
+
+    img_folder = f'{name}_images'
+    if not os.path.exists(img_folder):
+        os.makedirs(img_folder)
+
+    tfunc = transforms.ToPILImage()
+
+    files = [f for f in os.listdir(folder_path) if re.search(r'.+\.pth$', f)]
+    files = sorted(files)
+    for fn in tqdm(files):
+        if not fn.startswith('resnet'): continue
+        print(fn)
+
+        model = load_model_from_path(fn, folder_path, dataset, kwargs)
+        model.eval()
+
+
+        pp = os.path.join(f'{name}_tied_gm', f'tied_{fn}_gm.pkl')
+        with open(pp, 'rb') as fh:
+            gm = pickle.load(fh)
+
+        pp = f'{name}_{fn}_dcgan.bin'
+        netG = torch.load(pp)
+        netG.eval()
+        netG.cuda()
+
+        with torch.no_grad():
+            for data in dataset.loader['train']:
+                x = dataset.get_data(data)[0]
+                z = model.get_final_fm(x)
+                break
+
+        sX_tensor = z
+
+        # sX, sY = gm.sample(10)
+        # sX_tensor = torch.from_numpy(sX).float().cuda()
+        sX_tensor = torch.reshape(sX_tensor, list(sX_tensor.shape)+[1,1])
+        with torch.no_grad():
+            sI = netG(sX_tensor).detach().cpu()
+
+        print(sI.shape)
+        for k, si in enumerate(sI):
+            pp = os.path.join(img_folder, f'{k}.png')
+            im = tfunc(si)
+            im.save(pp)
+        exit(0)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -273,18 +361,28 @@ if __name__ == '__main__':
 
     env = trojanvision.environ.create(**kwargs)
 
-    '''
+    # '''
     dataset = trojanvision.datasets.create(**kwargs)
     print('train DCGAN models for', dataset.name)
     name = dataset.name
     folder_path = f'./benign_{name}'
     train_DCGAN_models(dataset, folder_path)
+    exit(0)
+    # '''
+
+
+    '''
+    dataset = trojanvision.datasets.create(**kwargs)
+    print('measure DCGAN wasserstein for', dataset.name)
+    name = dataset.name
+    folder_path = f'./benign_{name}'
+    measure_wasserstein(dataset, folder_path)
     # '''
 
     netG = VAEDecoder(
         out_channels=params['nc'],
         latent_channels=params['nz'],
-        residual_channels=params['ngf']
+        residual_channels=params['ngf'],
         strides=[2, 2, 2, 2, 2]
     )
     noise = torch.randn(1, params['nz'], 1, 1)
