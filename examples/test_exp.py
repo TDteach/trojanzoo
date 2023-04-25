@@ -4,9 +4,7 @@ import os
 import re
 import time
 import math
-import sys
 
-import random
 import numpy as np
 import torch
 from tqdm import tqdm
@@ -230,7 +228,6 @@ def get_GMM_models(dataset, folder_path, cov_type='tied'):
 
     files = [f for f in os.listdir(folder_path) if re.search(r'.+\.pth$', f)]
     files = sorted(files)
-    rst_list = list()
     for f in tqdm(files):
         model = load_model_from_path(f, folder_path, dataset)
         model.eval()
