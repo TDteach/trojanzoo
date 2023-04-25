@@ -17,6 +17,8 @@ import numpy as np
 
 from test_exp import load_model_from_path
 
+from gsw.gswnn import GSW_NN
+
 params = {
     'img_size': 32,
     'nc': 3,
@@ -318,6 +320,8 @@ def measure_wasserstein(dataset, folder_path):
         if not fn.startswith('resnet'): continue
         print(fn)
 
+        w_model = GSW_NN(din=3*32*32, dout=1, hidden=512, n_layers=3)
+
         model = load_model_from_path(fn, folder_path, dataset, kwargs)
         model.eval()
 
@@ -332,18 +336,29 @@ def measure_wasserstein(dataset, folder_path):
         netG.cuda()
 
         with torch.no_grad():
+            X, Y = list(), list()
             for data in dataset.loader['train']:
                 x = dataset.get_data(data)[0]
-                z = model.get_final_fm(x)
+                X.append(x)
+
+                sX, sY = gm.sample(x.shape[0])
+                sX_tensor = torch.from_numpy(sX).float().cuda()
+                sX_tensor = torch.reshape(sX_tensor, list(sX_tensor.shape)+[1,1])
+                sI = netG(sX_tensor)
+
+                Y.append(sI)
                 break
 
-        sX_tensor = z
+        X = torch.concat(X, dim=0)
+        Y = torch.concat(Y, dim=0)
+        X = X.reshape(X.shape[0], -1)
+        Y = Y.reshape(Y.shape[0], -1)
 
-        # sX, sY = gm.sample(10)
-        # sX_tensor = torch.from_numpy(sX).float().cuda()
-        sX_tensor = torch.reshape(sX_tensor, list(sX_tensor.shape)+[1,1])
-        with torch.no_grad():
-            sI = netG(sX_tensor).detach().cpu()
+        dist = w_model.max_gsw(X, Y)
+        print(dist)
+
+        exit(0)
+
 
         print(sI.shape)
         for k, si in enumerate(sI):
