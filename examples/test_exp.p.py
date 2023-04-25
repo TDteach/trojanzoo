@@ -4,12 +4,14 @@ import os
 import re
 import time
 import math
+import sys
 
 import random
 import numpy as np
 import torch
 from tqdm import tqdm
 import matplotlib.pyplot as plt
+import scipy
 from scipy import stats
 import pickle
 
@@ -204,6 +206,25 @@ def get_inter_info(dataset, inter_numpy):
 
 
 
+def get_model_name_from_path(f):
+    pre, ext = os.path.splitext(f)
+    a = pre.split('_')
+    if re.search(r'^[0-9]+', a[-1]):
+        model_name = '_'.join(a[:-1])
+    else:
+        model_name = pre
+
+    return model_name
+
+def load_model_from_path(f, folder_path, dataset):
+    model_name = get_model_name_from_path(f)
+    kwargs['model_name'] = model_name
+    model = trojanvision.models.create(dataset=dataset, **kwargs)
+    path = os.path.join(folder_path, f)
+    model.load(path)
+    return model
+
+
 def get_GMM_models(dataset, folder_path, cov_type='tied'):
     name = dataset.name
 
@@ -211,18 +232,7 @@ def get_GMM_models(dataset, folder_path, cov_type='tied'):
     files = sorted(files)
     rst_list = list()
     for f in tqdm(files):
-
-        pre, ext = os.path.splitext(f)
-        a = pre.split('_')
-        if re.search(r'^[0-9]+', a[-1]):
-            model_name = '_'.join(a[:-1])
-        else:
-            model_name = pre
-        kwargs['model_name'] = model_name
-        model = trojanvision.models.create(dataset=dataset, **kwargs)
-        path = os.path.join(folder_path, f)
-        model.load(path)
-
+        model = load_model_from_path(f, folder_path, dataset)
         model.eval()
         with torch.no_grad():
             gm = get_GMM_for_model(dataset, model, cov_type)
@@ -367,6 +377,148 @@ def remove_inf_nan(x, y):
         nx.append(_x)
         ny.append(_y)
     return np.asarray(nx), np.asarray(ny)
+
+
+def compare_infos(dataset, folder_path, cov_type='tied'):
+    name = dataset.name
+    gmm_folder = f'{name}_{cov_type}_gm'
+    files = os.listdir(gmm_folder)
+    model_paths = dict()
+    for f in files:
+        if not f.endswith('_gm.pkl'):
+            continue
+        p = '_'.join(f.split('_')[1:-1])
+        md = p.split('_')[0]
+        if md not in model_paths:
+            model_paths[md] = list()
+        model_paths[md].append(p)
+
+
+    all_fm = dict()
+    for md, p_list in model_paths.items():
+        if not md.startswith('resnet'): continue
+        all_fm[md] = list()
+        n = len(p_list)
+        for i in range(n):
+            print(p_list[i])
+            model = load_model_from_path(p_list[i], folder_path, dataset)
+            model.eval()
+
+            #for na, v in model._model.classifier.named_parameters():
+            #    print(na, v.shape)
+            #exit(0)
+
+            fm_list = list()
+            with torch.no_grad():
+                for data in dataset.loader['valid']:
+                    x = dataset.get_data(data)[0]
+                    final_fm = model.get_final_fm(x)
+                    fm_list.append(final_fm.detach().cpu().numpy())
+            valid_fm = np.concatenate(fm_list, axis=0)
+
+
+            fm_list = list()
+            with torch.no_grad():
+                z = 0
+                new_dataset = dataset.get_org_dataset('train',transform=dataset.get_transform(mode='valid'))
+                loader = dataset.get_dataloader('train', dataset=new_dataset, shuffle=False)
+                for data in loader:
+                    x = dataset.get_data(data)[0]
+                    z += 1
+                    if z == 1:
+                        print(x.shape)
+                        print(torch.sum(x))
+                    final_fm = model.get_final_fm(x)
+                    fm_list.append(final_fm.detach().cpu().numpy())
+            train_fm = np.concatenate(fm_list, axis=0)
+
+            f = p_list[i]
+            pp = os.path.join(f'{name}_{cov_type}_gm', f'{cov_type}_{f}_gm.pkl')
+            all_fm[md].append((valid_fm, train_fm, pp))
+            del model
+            if i == 1:
+                break
+        break
+
+
+    for md, fm_list in all_fm.items():
+        if not md.startswith('resnet'): continue
+        n = len(fm_list)
+        for i in range(n):
+            valid_fm, train_fm, pp = fm_list[i]
+            with open(pp, 'rb') as fh:
+                gm = pickle.load(fh)
+
+            H = np.linalg.pinv(valid_fm)
+            for j in range(i+1, n):
+                _valid_fm, _train_fm, _pp = fm_list[j]
+                with open(_pp, 'rb') as fh:
+                    _gm = pickle.load(fh)
+
+                W = np.matmul(H, _valid_fm)
+                X = np.matmul(train_fm, W)
+
+                prob_X = gm.score_samples(valid_fm)
+                prob_Y = _gm.score_samples(_valid_fm)
+
+                d_list = list()
+                for px, py in zip(prob_X, prob_Y):
+                    d = logsumexp([px, py], b=[1,-1])
+                    d_list.append(d)
+                print(np.mean(d_list))
+
+                diff = prob_X-prob_Y
+                print(np.mean(diff))
+                z = logsumexp(diff)
+                print(z)
+                print(prob_X[:10])
+                print(prob_Y[:10])
+                exit(0)
+
+
+
+    name = dataset.name
+
+    '''
+    fm_list = list()
+    for data in dataset.loader['train']:
+        x = dataset.get_data(data)[0]
+        final_fm = model.get_final_fm(x)
+        fm_list.append(final_fm.detach().cpu().numpy())
+    fm_list = np.concatenate(fm_list, axis=0)
+    print(fm_list.shape, model.num_classes)
+    '''
+
+
+
+    data = np.transpose(data, (1, 0))
+
+    n, m = data.shape[:2]
+    #for j in range(m):
+    #    data[:, j] -= logsumexp(data[:,j])
+
+    a = []
+    for j1 in tqdm(range(m)):
+        logsum = logsumexp(data[:,j1])
+        for j2 in range(j1+1, m):
+            dif = []
+            for i in range(n):
+                if data[i,j1] <= data[i,j2]:
+                    dif.append(-np.inf)
+                    continue
+                # d = logsumexp([data[i,j1], data[i,j2]], b=[1,-1])
+                d = data[i,j1] - data[i,j2]
+                # print(data[i,j1], data[i,j2], d)
+                dif.append(d)
+            surpus = logsumexp(dif)-logsum
+            print(j2, surpus)
+            a.append(surpus)
+
+    _ = plt.hist(a, bins='auto')
+    plt.show()
+
+
+
 
 
 def draw_gmm_results(dataset_name, cov_type='tied'):
@@ -571,6 +723,15 @@ if __name__ == '__main__':
     dataset = trojanvision.datasets.create(**kwargs)
     print('draw GMM figure for', dataset.name)
     draw_gmm_results(dataset.name)
+    # '''
+
+    # '''
+    kwargs['valid_batch_size'] = kwargs['batch_size']
+    dataset = trojanvision.datasets.create(**kwargs)
+    print('compare GMM info', dataset.name)
+    name = dataset.name
+    folder_path = f'./benign_{name}'
+    compare_infos(dataset, folder_path)
     # '''
 
 
