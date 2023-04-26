@@ -376,6 +376,32 @@ def remove_inf_nan(x, y):
     return np.asarray(nx), np.asarray(ny)
 
 
+def estimate_KL_from_samples(X, Y):
+    n, dx = X.shape
+    m, dy = Y.shape
+    assert dx == dy
+    d = dx
+
+    from sklearn.neighbors import NearestNeighbors
+
+    nbrs_X = NearestNeighbors(n_neighbors=2).fit(X)
+    nbrs_Y = NearestNeighbors(n_neighbors=1).fit(Y)
+
+    dist_X, _ = nbrs_X.kneighbors(X)
+    dist_Y, _ = nbrs_Y.kneighbors(X)
+
+    print(dist_X.shape, dist_Y.shape)
+    exit(0)
+
+    logX = np.log(dist_X[:, 1])
+    logY = np.log(dist_Y[:, 0])
+    rst = d * np.mean(logX - logY) + np.log(m / (n - 1))
+
+    return rst
+
+
+
+
 def wasserstein_between_two_gm(model1, model2, gm1, gm2, dataset, use_double=False):
     trans = MLP(din=512, dout=512, num_filters=512, depth=1)
     # w = trans.features.linear01.weight
@@ -446,6 +472,9 @@ def wasserstein_between_two_gm(model1, model2, gm1, gm2, dataset, use_double=Fal
     XX = torch.from_numpy(XX).float().cuda()
     YY = torch.from_numpy(YY).float().cuda()
     nXX = trans(XX)
+
+    dist = estimate_KL_from_samples(nXX, YY)
+    return dist, trans
 
     w_model = GSW_NN(din=512, nofprojections=1, num_filters=128, model_depth=1)
 
