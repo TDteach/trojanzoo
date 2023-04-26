@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 from torch import optim
-from mlp import MLP
+from .mlp import MLP
 
 
 class GSW_NN():
@@ -23,6 +23,10 @@ class GSW_NN():
         if torch.cuda.is_available() and use_cuda:
             self.model.cuda()
 
+        z = din * num_filters**model_depth
+        self.weight_cliping_limit = np.sqrt(din)/np.sqrt(z**2 * self.dout)
+        # self.weight_cliping_limit = 1/np.sqrt(z)
+
     def gsw(self, X, Y, random=True):
         '''
         Calculates GSW between two empirical distributions.
@@ -40,10 +44,15 @@ class GSW_NN():
         Xslices = self.model(X.to(self.device))
         Yslices = self.model(Y.to(self.device))
 
+        # Xslices = (Xslices.tanh() + 1.0) * 0.5
+        # Yslices = (Yslices.tanh() + 1.0) * 0.5
+
         Xslices_sorted = torch.sort(Xslices, dim=0)[0]
         Yslices_sorted = torch.sort(Yslices, dim=0)[0]
 
-        return torch.sqrt(torch.sum((Xslices_sorted - Yslices_sorted) ** 2))
+        # return torch.sqrt(torch.mean((Xslices_sorted - Yslices_sorted) ** 2))
+        # return torch.mean((Xslices_sorted - Yslices_sorted) ** 2)
+        return torch.nn.functional.mse_loss(Xslices_sorted, Yslices_sorted)
 
     def max_gsw(self, X, Y, iterations=50, lr=1e-4):
         N, dn = X.shape
@@ -55,6 +64,9 @@ class GSW_NN():
         optimizer = optim.Adam(self.model.parameters(), lr=lr)
         total_loss = np.zeros((iterations,))
         for i in range(iterations):
+            for p in self.model.parameters():
+                p.data.clamp_(-self.weight_cliping_limit, self.weight_cliping_limit)
+
             optimizer.zero_grad()
             loss = -self.gsw(X.to(self.device), Y.to(self.device), random=False)
             total_loss[i] = loss.item()

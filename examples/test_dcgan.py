@@ -320,7 +320,7 @@ def measure_wasserstein(dataset, folder_path):
         if not fn.startswith('resnet'): continue
         print(fn)
 
-        w_model = GSW_NN(din=3*32*32, dout=1, hidden=512, n_layers=3)
+        w_model = GSW_NN(din=3*32*32, nofprojections=1, num_filters=32, model_depth=1)
 
         model = load_model_from_path(fn, folder_path, dataset, kwargs)
         model.eval()
@@ -337,7 +337,9 @@ def measure_wasserstein(dataset, folder_path):
 
         with torch.no_grad():
             X, Y = list(), list()
+            iters = 0
             for data in dataset.loader['train']:
+                iters += 1
                 x = dataset.get_data(data)[0]
                 X.append(x)
 
@@ -347,14 +349,19 @@ def measure_wasserstein(dataset, folder_path):
                 sI = netG(sX_tensor)
 
                 Y.append(sI)
-                break
+                print(iters)
+                if iters > 2:
+                    break
 
         X = torch.concat(X, dim=0)
         Y = torch.concat(Y, dim=0)
         X = X.reshape(X.shape[0], -1)
         Y = Y.reshape(Y.shape[0], -1)
 
-        dist = w_model.max_gsw(X, Y)
+        print(X.shape, Y.shape)
+
+        Y = X+torch.randn(X.shape).float().cuda()*1e-2
+        dist = w_model.max_gsw(X.data, Y.data, iterations=10000)
         print(dist)
 
         exit(0)
@@ -376,7 +383,7 @@ if __name__ == '__main__':
 
     env = trojanvision.environ.create(**kwargs)
 
-    # '''
+    '''
     dataset = trojanvision.datasets.create(**kwargs)
     print('train DCGAN models for', dataset.name)
     name = dataset.name
@@ -386,7 +393,7 @@ if __name__ == '__main__':
     # '''
 
 
-    '''
+    # '''
     dataset = trojanvision.datasets.create(**kwargs)
     print('measure DCGAN wasserstein for', dataset.name)
     name = dataset.name

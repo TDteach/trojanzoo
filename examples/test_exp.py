@@ -6,7 +6,6 @@ import time
 import math
 
 import numpy as np
-import torch
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 import scipy
@@ -14,6 +13,12 @@ from scipy import stats
 import pickle
 
 from scipy.special import logsumexp
+
+import torch
+import torch.nn.functional as F
+
+from gsw.gswnn import GSW_NN
+from gsw.mlp import MLP
 
 
 def savitzky_golay(y, window_size, order, deriv=0, rate=1, return_err=False):
@@ -376,6 +381,50 @@ def remove_inf_nan(x, y):
     return np.asarray(nx), np.asarray(ny)
 
 
+def wasserstein_between_two_gm(X1, X2, gm1, gm2):
+    trans = MLP(din=512, dout=512, num_filters=512, depth=1)
+    # w = trans.features.linear01.weight
+    optim = torch.optim.Adam(trans.parameters(), lr=1e-3, betas=(0.5,0.99), weight_decay=1e-5)
+    trans.cuda()
+
+    X, Y = X1, X2
+
+    for k in range(200):
+        optim.zero_grad()
+        nX = trans(X)
+
+        loss = F.mse_loss(nX, Y)
+
+        loss.backward()
+        optim.step()
+
+    XX, _ = gm1.sample(10000)
+    YY, _ = gm2.sample(10000)
+    XX = torch.from_numpy(XX).float().cuda()
+    YY = torch.from_numpy(YY).float().cuda()
+    nXX = trans(XX)
+
+    w_model = GSW_NN(din=512, nofprojections=1, num_filters=32, model_depth=1)
+    w_model.model = w_model.model.double()
+
+    dist = w_model.max_gsw(nXX.double().data, YY.double().data, iterations=10000)
+
+    del w_model
+
+    return dist.sqrt().item(), trans
+
+def get_fm_from_loader(model, loader, get_data_fn):
+    fm_list = list()
+    with torch.no_grad():
+        for data in loader:
+            x = get_data_fn(data)[0]
+            final_fm = model.get_final_fm(x)
+            fm_list.append(final_fm.detach().cpu().numpy())
+    return np.concatenate(fm_list, axis=0)
+
+
+
+
 def compare_infos(dataset, folder_path, cov_type='tied'):
     name = dataset.name
     gmm_folder = f'{name}_{cov_type}_gm'
@@ -405,73 +454,78 @@ def compare_infos(dataset, folder_path, cov_type='tied'):
             #    print(na, v.shape)
             #exit(0)
 
-            fm_list = list()
-            with torch.no_grad():
-                for data in dataset.loader['valid']:
-                    x = dataset.get_data(data)[0]
-                    final_fm = model.get_final_fm(x)
-                    fm_list.append(final_fm.detach().cpu().numpy())
-            valid_fm = np.concatenate(fm_list, axis=0)
+            valid_fm = get_fm_from_loader(model, dataset.loader['valid'], dataset.get_data)
 
-
-            fm_list = list()
-            with torch.no_grad():
-                z = 0
-                new_dataset = dataset.get_org_dataset('train',transform=dataset.get_transform(mode='valid'))
-                loader = dataset.get_dataloader('train', dataset=new_dataset, shuffle=False)
-                for data in loader:
-                    x = dataset.get_data(data)[0]
-                    z += 1
-                    if z == 1:
-                        print(x.shape)
-                        print(torch.sum(x))
-                    final_fm = model.get_final_fm(x)
-                    fm_list.append(final_fm.detach().cpu().numpy())
-            train_fm = np.concatenate(fm_list, axis=0)
+            new_dataset = dataset.get_org_dataset('train',transform=dataset.get_transform(mode='valid'))
+            loader = dataset.get_dataloader('train', dataset=new_dataset, shuffle=False)
+            train_fm = get_fm_from_loader(model, loader, dataset.get_data)
 
             f = p_list[i]
             pp = os.path.join(f'{name}_{cov_type}_gm', f'{cov_type}_{f}_gm.pkl')
             all_fm[md].append((valid_fm, train_fm, pp))
             del model
-            if i == 1:
-                break
-        break
 
 
+    rst_dict = dict()
     for md, fm_list in all_fm.items():
         if not md.startswith('resnet'): continue
+
+        rst_dict[md] = dict()
+
         n = len(fm_list)
         for i in range(n):
             valid_fm, train_fm, pp = fm_list[i]
+            X = torch.from_numpy(valid_fm).float().cuda()
+            XX = torch.from_numpy(train_fm).float().cuda()
             with open(pp, 'rb') as fh:
                 gm = pickle.load(fh)
 
-            H = np.linalg.pinv(valid_fm)
             for j in range(i+1, n):
                 _valid_fm, _train_fm, _pp = fm_list[j]
+
+                Y = torch.from_numpy(_valid_fm).float().cuda()
+                YY = torch.from_numpy(_train_fm).float().cuda()
                 with open(_pp, 'rb') as fh:
                     _gm = pickle.load(fh)
 
-                W = np.matmul(H, _valid_fm)
-                X = np.matmul(train_fm, W)
+                dist, trans = wasserstein_between_two_gm(X, Y, gm, _gm)
+                print(i, j, dist)
 
-                prob_X = gm.score_samples(valid_fm)
-                prob_Y = _gm.score_samples(_valid_fm)
+                trans.eval()
+                trans.cpu()
+                rst = {
+                    'trans': trans.state_dict(),
+                    'dist': dist.sqrt().item(),
+                }
 
-                d_list = list()
-                for px, py in zip(prob_X, prob_Y):
-                    d = logsumexp([px, py], b=[1,-1])
-                    d_list.append(d)
-                print(np.mean(d_list))
+                rst_dict[md][(pp, _pp)] = rst
 
-                diff = prob_X-prob_Y
-                print(np.mean(diff))
-                z = logsumexp(diff)
-                print(z)
-                print(prob_X[:10])
-                print(prob_Y[:10])
-                exit(0)
+    with open('benign_models_between.pkl','wb') as fh:
+        pickle.dump(rst_dict,fh)
 
+    exit(0)
+
+
+    name = dataset.name
+
+    '''
+    fm_list = list()
+                dist = w_model.max_gsw(nXX.data, YY.data, iterations=10000)
+                print(i, j, dist)
+
+                trans.eval()
+                trans.cpu()
+                rst = {
+                    'trans': trans.state_dict(),
+                    'dist': dist,
+                }
+
+                rst_dict[md][(pp, _pp)] = rst
+
+    with open('benign_models_between.pkl','wb') as fh:
+        pickle.dump(rst_dict,fh)
+
+    exit(0)
 
 
     name = dataset.name
@@ -484,7 +538,7 @@ def compare_infos(dataset, folder_path, cov_type='tied'):
         fm_list.append(final_fm.detach().cpu().numpy())
     fm_list = np.concatenate(fm_list, axis=0)
     print(fm_list.shape, model.num_classes)
-    '''
+    # '''
 
 
 
@@ -513,7 +567,6 @@ def compare_infos(dataset, folder_path, cov_type='tied'):
 
     _ = plt.hist(a, bins='auto')
     plt.show()
-
 
 
 
@@ -653,6 +706,54 @@ def main(dataset_name):
     plt.show()
 
 
+def compare_benign_trojan(dataset, cov_type='tied'):
+    name = dataset.name
+
+    benign_folder = f'benign_{name}'
+    benign_gm_folder = f'{name}_{cov_type}_gm'
+    trojan_folder = f'trojan_{name}'
+    trojan_gm_folder = f'{name}_trojan_{cov_type}_gm'
+
+    files = os.listdir(trojan_gm_folder)
+    model_paths = dict()
+    for f in files:
+        if not f.endswith('_gm.pkl'):
+            continue
+        if not os.path.exists(os.path.join(benign_gm_folder, f)):
+            continue
+        p = '_'.join(f.split('_')[1:-1])
+        md = p.split('_')[0]
+        if md not in model_paths:
+            model_paths[md] = list()
+        model_paths[md].append(p)
+
+
+    for md, p_list in model_paths.items():
+        if not md.startswith('resnet'): continue
+
+        n = len(p_list)
+        for i in range(n):
+            f = p_list[i]
+
+            benign_model = load_model_from_path(f, benign_folder, dataset, kwargs)
+            benign_model.eval()
+            valid_fm_benign = get_fm_from_loader(benign_model, dataset.loader['valid'], dataset.get_data)
+            del benign_model
+
+            trojan_model = load_model_from_path(f, trojan_folder, dataset, kwargs)
+            trojan_model.eval()
+            valid_fm_trojan = get_fm_from_loader(trojan_model, dataset.loader['valid'], dataset.get_data)
+            del trojan_model
+
+            bpp = os.path.join(benign_gm_folder, f'{cov_type}_{f}_gm.pkl')
+            with open(bpp, 'rb') as fh:
+                bgm = pickle.load(fh)
+            tpp = os.path.join(trojan_gm_folder, f'{cov_type}_{f}_gm.pkl')
+            with open(tpp, 'rb') as fh:
+                tgm = pickle.load(fh)
+
+            dist, trans = wasserstein_between_two_gm(valid_fm_benign, valid_fm_trojan, bgm, tgm)
+            print(dist)
 
 
 if __name__ == '__main__':
@@ -687,7 +788,8 @@ if __name__ == '__main__':
     dataset = trojanvision.datasets.create(**kwargs)
     print('get GMM models for', dataset.name)
     name = dataset.name
-    folder_path = f'./benign_{name}'
+    # folder_path = f'./benign_{name}'
+    folder_path = f'./trojan_{name}'
     get_GMM_models(dataset, folder_path)
     # '''
 
