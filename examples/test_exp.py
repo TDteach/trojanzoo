@@ -376,16 +376,62 @@ def remove_inf_nan(x, y):
     return np.asarray(nx), np.asarray(ny)
 
 
-def wasserstein_between_two_gm(X1, X2, gm1, gm2, use_double=False):
+def wasserstein_between_two_gm(model1, model2, gm1, gm2, dataset, use_double=False):
     trans = MLP(din=512, dout=512, num_filters=512, depth=1)
     # w = trans.features.linear01.weight
     optim = torch.optim.Adam(trans.parameters(), lr=1e-3, betas=(0.5, 0.99), weight_decay=1e-5)
     trans.cuda()
 
-    X = torch.from_numpy(X1).float().cuda()
-    Y = torch.from_numpy(X2).float().cuda()
+    # X = torch.from_numpy(X1).float().cuda()
+    # Y = torch.from_numpy(X2).float().cuda()
 
-    for k in range(200):
+    rand_beta = 0.2
+    mixup = True
+    randaug = True
+    num_epochs = 10
+
+    model1.eval()
+    model2.eval()
+
+    loader = dataset.loader['train']
+
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optim, len(loader)*num_epochs)
+
+    for epoch in tqdm(range(num_epochs)):
+        for data in loader:
+            x = dataset.get_data(data)[0]
+
+            if mixup:
+                gamma = np.random.beta(rand_beta, rand_beta, x.size(0))
+                gamma_tensor = torch.from_numpy(gamma).float().cuda().reshape(-1, 1, 1, 1)
+                indices = torch.randperm(x.size(0), device='cuda', dtype=torch.long)
+                perm_x = x[indices]
+                nx = x * gamma_tensor + perm_x * (1 - gamma_tensor)
+            else:
+                nx = x
+
+            if randaug:
+                anchors = torch.rand(nx.shape, device='cuda')
+                inter = np.random.beta(rand_beta * 10, rand_beta, x.size(0))
+                inter_tensor = torch.from_numpy(gamma).float().cuda().reshape(-1, 1, 1, 1)
+                nx = nx * inter_tensor + anchors * (1 - inter_tensor)
+            else:
+                nx = nx
+
+            with torch.no_grad():
+                z1 = model1.get_final_fm(nx)
+                z2 = model2.get_final_fm(nx)
+            tz = trans(z1)
+            loss = F.mse_loss(tz, z2)
+
+            optim.zero_grad()
+            loss.backward()
+            optim.step()
+            scheduler.step()
+
+    '''
+
+    for k in range(50000):
         optim.zero_grad()
         nX = trans(X)
 
@@ -393,6 +439,7 @@ def wasserstein_between_two_gm(X1, X2, gm1, gm2, use_double=False):
 
         loss.backward()
         optim.step()
+    '''
 
     XX, _ = gm1.sample(10000)
     YY, _ = gm2.sample(10000)
@@ -400,7 +447,7 @@ def wasserstein_between_two_gm(X1, X2, gm1, gm2, use_double=False):
     YY = torch.from_numpy(YY).float().cuda()
     nXX = trans(XX)
 
-    w_model = GSW_NN(din=512, nofprojections=1, num_filters=32, model_depth=1)
+    w_model = GSW_NN(din=512, nofprojections=1, num_filters=128, model_depth=1)
 
     if use_double:
         w_model.model = w_model.model.double()
@@ -444,23 +491,11 @@ def compare_infos(dataset, folder_path, cov_type='tied'):
         n = len(p_list)
         for i in range(n):
             print(p_list[i])
-            model = load_model_from_path(p_list[i], folder_path, dataset, kwargs)
-            model.eval()
-
-            # for na, v in model._model.classifier.named_parameters():
-            #    print(na, v.shape)
-            # exit(0)
-
-            valid_fm = get_fm_from_loader(model, dataset.loader['valid'], dataset.get_data)
-
-            new_dataset = dataset.get_org_dataset('train', transform=dataset.get_transform(mode='valid'))
-            loader = dataset.get_dataloader('train', dataset=new_dataset, shuffle=False)
-            train_fm = get_fm_from_loader(model, loader, dataset.get_data)
 
             f = p_list[i]
-            pp = os.path.join(f'{name}_{cov_type}_gm', f'{cov_type}_{f}_gm.pkl')
-            all_fm[md].append((valid_fm, train_fm, pp))
-            del model
+            p_gm = os.path.join(f'{name}_{cov_type}_gm', f'{cov_type}_{f}_gm.pkl')
+
+            all_fm[md].append((p_gm, f, folder_path))
 
     rst_dict = dict()
     for md, fm_list in all_fm.items():
@@ -470,16 +505,23 @@ def compare_infos(dataset, folder_path, cov_type='tied'):
 
         n = len(fm_list)
         for i in range(n):
-            valid_fm, train_fm, pp = fm_list[i]
+            pp, pm, fd = fm_list[i]
             with open(pp, 'rb') as fh:
                 gm = pickle.load(fh)
 
+            model = load_model_from_path(pm, fd, dataset, kwargs)
+            model.eval()
+
             for j in range(i + 1, n):
-                _valid_fm, _train_fm, _pp = fm_list[j]
+                _pp, _pm, _fd = fm_list[j]
                 with open(_pp, 'rb') as fh:
                     _gm = pickle.load(fh)
 
-                dist, trans = wasserstein_between_two_gm(valid_fm, _valid_fm, gm, _gm)
+                _model = load_model_from_path(_pm, _fd, dataset, kwargs)
+                _model.eval()
+
+                dist, trans = wasserstein_between_two_gm(model, _model, gm, _gm, dataset, use_double=False)
+                # dist, trans = wasserstein_between_two_gm(train_fm, _train_fm, gm, _gm)
                 print(i, j, dist)
 
                 trans.eval()
@@ -490,6 +532,8 @@ def compare_infos(dataset, folder_path, cov_type='tied'):
                 }
 
                 rst_dict[md][(pp, _pp)] = rst
+
+    # exit(0)
 
     with open('benign_models_between.pkl', 'wb') as fh:
         pickle.dump(rst_dict, fh)
@@ -716,13 +760,8 @@ def compare_benign_trojan(dataset, cov_type='tied'):
 
             benign_model = load_model_from_path(f, benign_folder, dataset, kwargs)
             benign_model.eval()
-            valid_fm_benign = get_fm_from_loader(benign_model, dataset.loader['valid'], dataset.get_data)
-            del benign_model
-
             trojan_model = load_model_from_path(f, trojan_folder, dataset, kwargs)
             trojan_model.eval()
-            valid_fm_trojan = get_fm_from_loader(trojan_model, dataset.loader['valid'], dataset.get_data)
-            del trojan_model
 
             bpp = os.path.join(benign_gm_folder, f'{cov_type}_{f}_gm.pkl')
             with open(bpp, 'rb') as fh:
@@ -731,8 +770,11 @@ def compare_benign_trojan(dataset, cov_type='tied'):
             with open(tpp, 'rb') as fh:
                 tgm = pickle.load(fh)
 
-            dist, trans = wasserstein_between_two_gm(valid_fm_benign, valid_fm_trojan, bgm, tgm)
+            dist, trans = wasserstein_between_two_gm(benign_model, trojan_model, bgm, tgm, dataset)
             print(dist)
+
+            del benign_model
+            del trojan_model
 
 
 if __name__ == '__main__':
