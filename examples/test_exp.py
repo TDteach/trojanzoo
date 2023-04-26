@@ -234,6 +234,7 @@ def get_GMM_models(dataset, folder_path, cov_type='tied'):
     files = [f for f in os.listdir(folder_path) if re.search(r'.+\.pth$', f)]
     files = sorted(files)
     for f in tqdm(files):
+        print(f)
         model = load_model_from_path(f, folder_path, dataset, kwargs)
         model.eval()
         with torch.no_grad():
@@ -375,13 +376,14 @@ def remove_inf_nan(x, y):
     return np.asarray(nx), np.asarray(ny)
 
 
-def wasserstein_between_two_gm(X1, X2, gm1, gm2):
+def wasserstein_between_two_gm(X1, X2, gm1, gm2, use_double=False):
     trans = MLP(din=512, dout=512, num_filters=512, depth=1)
     # w = trans.features.linear01.weight
     optim = torch.optim.Adam(trans.parameters(), lr=1e-3, betas=(0.5, 0.99), weight_decay=1e-5)
     trans.cuda()
 
-    X, Y = X1, X2
+    X = torch.from_numpy(X1).float().cuda()
+    Y = torch.from_numpy(X2).float().cuda()
 
     for k in range(200):
         optim.zero_grad()
@@ -399,9 +401,12 @@ def wasserstein_between_two_gm(X1, X2, gm1, gm2):
     nXX = trans(XX)
 
     w_model = GSW_NN(din=512, nofprojections=1, num_filters=32, model_depth=1)
-    w_model.model = w_model.model.double()
 
-    dist = w_model.max_gsw(nXX.double().data, YY.double().data, iterations=10000)
+    if use_double:
+        w_model.model = w_model.model.double()
+        dist = w_model.max_gsw(nXX.double().data, YY.double().data, iterations=10000)
+    else:
+        dist = w_model.max_gsw(nXX.data, YY.data, iterations=10000)
 
     del w_model
 
@@ -466,27 +471,22 @@ def compare_infos(dataset, folder_path, cov_type='tied'):
         n = len(fm_list)
         for i in range(n):
             valid_fm, train_fm, pp = fm_list[i]
-            X = torch.from_numpy(valid_fm).float().cuda()
-            XX = torch.from_numpy(train_fm).float().cuda()
             with open(pp, 'rb') as fh:
                 gm = pickle.load(fh)
 
             for j in range(i + 1, n):
                 _valid_fm, _train_fm, _pp = fm_list[j]
-
-                Y = torch.from_numpy(_valid_fm).float().cuda()
-                YY = torch.from_numpy(_train_fm).float().cuda()
                 with open(_pp, 'rb') as fh:
                     _gm = pickle.load(fh)
 
-                dist, trans = wasserstein_between_two_gm(X, Y, gm, _gm)
+                dist, trans = wasserstein_between_two_gm(valid_fm, _valid_fm, gm, _gm)
                 print(i, j, dist)
 
                 trans.eval()
                 trans.cpu()
                 rst = {
                     'trans': trans.state_dict(),
-                    'dist': dist.sqrt().item(),
+                    'dist': dist,
                 }
 
                 rst_dict[md][(pp, _pp)] = rst
@@ -803,7 +803,7 @@ if __name__ == '__main__':
     draw_gmm_results(dataset.name)
     # '''
 
-    '''
+    # '''
     kwargs['valid_batch_size'] = kwargs['batch_size']
     dataset = trojanvision.datasets.create(**kwargs)
     print('compare GMM info', dataset.name)
@@ -812,7 +812,7 @@ if __name__ == '__main__':
     compare_infos(dataset, folder_path)
     # '''
 
-    # '''
+    '''
     kwargs['valid_batch_size'] = kwargs['batch_size']
     dataset = trojanvision.datasets.create(**kwargs)
     print('compare benign trojan', dataset.name)
