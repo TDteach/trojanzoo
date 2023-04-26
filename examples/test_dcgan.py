@@ -273,7 +273,7 @@ def train_DCGAN_models(dataset, forder_path):
 
                 if randaug:
                     anchors = torch.rand(nx.shape, device='cuda')
-                    inter = np.random.beta(rand_beta*10, rand_beta, x.size(0))
+                    inter = np.random.beta(rand_beta * 10, rand_beta, x.size(0))
                     inter_tensor = torch.from_numpy(gamma).float().cuda().reshape(-1, 1, 1, 1)
                     nx = nx * inter_tensor + anchors * (1 - inter_tensor)
                 else:
@@ -305,7 +305,6 @@ def train_DCGAN_models(dataset, forder_path):
 
 
 def measure_wasserstein(dataset, folder_path):
-
     name = dataset.name
 
     img_folder = f'{name}_images'
@@ -320,11 +319,10 @@ def measure_wasserstein(dataset, folder_path):
         if not fn.startswith('resnet'): continue
         print(fn)
 
-        w_model = GSW_NN(din=3*32*32, nofprojections=1, num_filters=32, model_depth=1)
+        w_model = GSW_NN(din=3 * 32 * 32, nofprojections=1, num_filters=32, model_depth=1)
 
         model = load_model_from_path(fn, folder_path, dataset, kwargs)
         model.eval()
-
 
         pp = os.path.join(f'{name}_tied_gm', f'tied_{fn}_gm.pkl')
         with open(pp, 'rb') as fh:
@@ -345,7 +343,7 @@ def measure_wasserstein(dataset, folder_path):
 
                 sX, sY = gm.sample(x.shape[0])
                 sX_tensor = torch.from_numpy(sX).float().cuda()
-                sX_tensor = torch.reshape(sX_tensor, list(sX_tensor.shape)+[1,1])
+                sX_tensor = torch.reshape(sX_tensor, list(sX_tensor.shape) + [1, 1])
                 sI = netG(sX_tensor)
 
                 Y.append(sI)
@@ -360,12 +358,11 @@ def measure_wasserstein(dataset, folder_path):
 
         print(X.shape, Y.shape)
 
-        Y = X+torch.randn(X.shape).float().cuda()*1e-2
+        Y = X + torch.randn(X.shape).float().cuda() * 1e-2
         dist = w_model.max_gsw(X.data, Y.data, iterations=10000)
         print(dist)
 
         exit(0)
-
 
         print(sI.shape)
         for k, si in enumerate(sI):
@@ -373,6 +370,7 @@ def measure_wasserstein(dataset, folder_path):
             im = tfunc(si)
             im.save(pp)
         exit(0)
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -391,7 +389,6 @@ if __name__ == '__main__':
     train_DCGAN_models(dataset, folder_path)
     exit(0)
     # '''
-
 
     # '''
     dataset = trojanvision.datasets.create(**kwargs)

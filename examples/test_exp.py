@@ -98,8 +98,8 @@ def savitzky_golay(y, window_size, order, deriv=0, rate=1, return_err=False):
 
     err_list = list()
     for i in range(len(ry)):
-        ll, rr = max(0,i-half_window), min(len(y), i+half_window+1)
-        err = np.mean((y[ll:rr] - ry[i])**2)
+        ll, rr = max(0, i - half_window), min(len(y), i + half_window + 1)
+        err = np.mean((y[ll:rr] - ry[i]) ** 2)
         err_list.append(np.sqrt(err))
     err_list = np.asarray(err_list)
     return ry, err_list
@@ -119,12 +119,11 @@ def get_GMM_for_model(dataset, model, covariance_type='tied'):
     X = fm_list
     from sklearn.mixture import GaussianMixture
     # gm = GaussianMixture(n_components=model.num_classes, random_state=0, max_iter=500, verbose=2, tol=1e-4, covariance_type='diag').fit(X)
-    gm = GaussianMixture(n_components=model.num_classes, random_state=0, max_iter=500, verbose=2, tol=1e-4, covariance_type=covariance_type).fit(X)
+    gm = GaussianMixture(n_components=model.num_classes, random_state=0, max_iter=500, verbose=2, tol=1e-4,
+                         covariance_type=covariance_type).fit(X)
     print(gm.means_.shape)
 
     return gm
-
-
 
 
 def get_inter_data(dataset):
@@ -135,12 +134,13 @@ def get_inter_data(dataset):
         x = dataset.get_data(data)[0]
         anchors = torch.rand(x.shape, device='cuda')
         inter = torch.rand([len(x), 1, 1, 1], device='cuda')
-        nx = anchors * (1-inter) + x * inter
+        nx = anchors * (1 - inter) + x * inter
         x_list.append(nx.detach().cpu().numpy())
     pp = f'{name}_inter_x.pkl'
     with open(pp, 'wb') as f:
         pickle.dump(x_list, f)
     print('inter data saved to', pp)
+
 
 def get_inter_info(dataset, inter_numpy):
     name = dataset.name
@@ -193,7 +193,7 @@ def get_inter_info(dataset, inter_numpy):
             for data in dataset.loader['train']:
                 x = dataset.get_data(data)[0]
                 x = torch.reshape(x, (len(x), -1))
-                dis = x-z
+                dis = x - z
                 dis = torch.norm(dis, dim=-1)
                 dis_list.append(dis.detach().cpu().numpy())
             dis_list = np.concatenate(dis_list, axis=0)
@@ -208,7 +208,6 @@ def get_inter_info(dataset, inter_numpy):
         np.save(f, np.asarray(info_list))
 
 
-
 def get_model_name_from_path(f):
     pre, ext = os.path.splitext(f)
     a = pre.split('_')
@@ -218,6 +217,7 @@ def get_model_name_from_path(f):
         model_name = pre
 
     return model_name
+
 
 def load_model_from_path(f, folder_path, dataset, kwargs):
     model_name = get_model_name_from_path(f)
@@ -243,9 +243,6 @@ def get_GMM_models(dataset, folder_path, cov_type='tied'):
             pickle.dump(gm, fh)
 
         del model
-
-
-
 
 
 def get_inter_probs(dataset, inter_x, folder_path):
@@ -281,7 +278,6 @@ def get_inter_probs(dataset, inter_x, folder_path):
 
     with open(f'{name}_probs_list.npy', 'wb') as f:
         np.save(f, np.asarray(rst_list))
-
 
 
 def get_inter_GMM_info(dataset, inter_x, folder_path, cov_type='tied'):
@@ -331,12 +327,10 @@ def get_inter_GMM_info(dataset, inter_x, folder_path, cov_type='tied'):
         np.save(f, np.asarray(rst_list))
 
 
-
-
 def fill_nan(a):
     for i in range(1, len(a)):
         if np.isnan(a[i]):
-            a[i] = a[i-1]
+            a[i] = a[i - 1]
     return a
 
 
@@ -345,23 +339,23 @@ def remove_outliers(x, y, n_bins=50, keep_ratio='std', min_ins=2):
     del_list = list()
     idx = np.arange(len(x))
     for i in range(n_bins):
-        s = bid == (i+1)
+        s = bid == (i + 1)
         jj = idx[s]
         if np.sum(s) < min_ins: continue
         zy = y[s]
         zz = np.abs(zy - yyy[i])
         zz = np.sort(zz)
-        if keep_ratio=='std':
+        if keep_ratio == 'std':
             thr = np.std(zy)
         else:
-            thr = zz[int(len(zz)*keep_ratio)]
+            thr = zz[int(len(zz) * keep_ratio)]
         for j in jj:
-            if abs(y[j]-yyy[i]) > thr:
+            if abs(y[j] - yyy[i]) > thr:
                 del_list.append(j)
     nx, ny = list(), list()
     del_list = sorted(del_list)
     print('remove {} outliers'.format(len(del_list)))
-    for i, (x_, y_) in enumerate(zip(x,y)):
+    for i, (x_, y_) in enumerate(zip(x, y)):
         if len(del_list) > 0 and i == del_list[0]:
             del_list.pop(0)
             continue
@@ -373,7 +367,7 @@ def remove_outliers(x, y, n_bins=50, keep_ratio='std', min_ins=2):
 
 def remove_inf_nan(x, y):
     nx, ny = list(), list()
-    for _x, _y in zip(x,y):
+    for _x, _y in zip(x, y):
         if any([np.isinf(_x), np.isinf(_y), np.isnan(_x), np.isnan(_y)]):
             continue
         nx.append(_x)
@@ -384,7 +378,7 @@ def remove_inf_nan(x, y):
 def wasserstein_between_two_gm(X1, X2, gm1, gm2):
     trans = MLP(din=512, dout=512, num_filters=512, depth=1)
     # w = trans.features.linear01.weight
-    optim = torch.optim.Adam(trans.parameters(), lr=1e-3, betas=(0.5,0.99), weight_decay=1e-5)
+    optim = torch.optim.Adam(trans.parameters(), lr=1e-3, betas=(0.5, 0.99), weight_decay=1e-5)
     trans.cuda()
 
     X, Y = X1, X2
@@ -413,6 +407,7 @@ def wasserstein_between_two_gm(X1, X2, gm1, gm2):
 
     return dist.sqrt().item(), trans
 
+
 def get_fm_from_loader(model, loader, get_data_fn):
     fm_list = list()
     with torch.no_grad():
@@ -421,8 +416,6 @@ def get_fm_from_loader(model, loader, get_data_fn):
             final_fm = model.get_final_fm(x)
             fm_list.append(final_fm.detach().cpu().numpy())
     return np.concatenate(fm_list, axis=0)
-
-
 
 
 def compare_infos(dataset, folder_path, cov_type='tied'):
@@ -439,7 +432,6 @@ def compare_infos(dataset, folder_path, cov_type='tied'):
             model_paths[md] = list()
         model_paths[md].append(p)
 
-
     all_fm = dict()
     for md, p_list in model_paths.items():
         if not md.startswith('resnet'): continue
@@ -450,13 +442,13 @@ def compare_infos(dataset, folder_path, cov_type='tied'):
             model = load_model_from_path(p_list[i], folder_path, dataset, kwargs)
             model.eval()
 
-            #for na, v in model._model.classifier.named_parameters():
+            # for na, v in model._model.classifier.named_parameters():
             #    print(na, v.shape)
-            #exit(0)
+            # exit(0)
 
             valid_fm = get_fm_from_loader(model, dataset.loader['valid'], dataset.get_data)
 
-            new_dataset = dataset.get_org_dataset('train',transform=dataset.get_transform(mode='valid'))
+            new_dataset = dataset.get_org_dataset('train', transform=dataset.get_transform(mode='valid'))
             loader = dataset.get_dataloader('train', dataset=new_dataset, shuffle=False)
             train_fm = get_fm_from_loader(model, loader, dataset.get_data)
 
@@ -464,7 +456,6 @@ def compare_infos(dataset, folder_path, cov_type='tied'):
             pp = os.path.join(f'{name}_{cov_type}_gm', f'{cov_type}_{f}_gm.pkl')
             all_fm[md].append((valid_fm, train_fm, pp))
             del model
-
 
     rst_dict = dict()
     for md, fm_list in all_fm.items():
@@ -480,7 +471,7 @@ def compare_infos(dataset, folder_path, cov_type='tied'):
             with open(pp, 'rb') as fh:
                 gm = pickle.load(fh)
 
-            for j in range(i+1, n):
+            for j in range(i + 1, n):
                 _valid_fm, _train_fm, _pp = fm_list[j]
 
                 Y = torch.from_numpy(_valid_fm).float().cuda()
@@ -500,11 +491,10 @@ def compare_infos(dataset, folder_path, cov_type='tied'):
 
                 rst_dict[md][(pp, _pp)] = rst
 
-    with open('benign_models_between.pkl','wb') as fh:
-        pickle.dump(rst_dict,fh)
+    with open('benign_models_between.pkl', 'wb') as fh:
+        pickle.dump(rst_dict, fh)
 
     exit(0)
-
 
     name = dataset.name
 
@@ -540,35 +530,31 @@ def compare_infos(dataset, folder_path, cov_type='tied'):
     print(fm_list.shape, model.num_classes)
     # '''
 
-
-
     data = np.transpose(data, (1, 0))
 
     n, m = data.shape[:2]
-    #for j in range(m):
+    # for j in range(m):
     #    data[:, j] -= logsumexp(data[:,j])
 
     a = []
     for j1 in tqdm(range(m)):
-        logsum = logsumexp(data[:,j1])
-        for j2 in range(j1+1, m):
+        logsum = logsumexp(data[:, j1])
+        for j2 in range(j1 + 1, m):
             dif = []
             for i in range(n):
-                if data[i,j1] <= data[i,j2]:
+                if data[i, j1] <= data[i, j2]:
                     dif.append(-np.inf)
                     continue
                 # d = logsumexp([data[i,j1], data[i,j2]], b=[1,-1])
-                d = data[i,j1] - data[i,j2]
+                d = data[i, j1] - data[i, j2]
                 # print(data[i,j1], data[i,j2], d)
                 dif.append(d)
-            surpus = logsumexp(dif)-logsum
+            surpus = logsumexp(dif) - logsum
             print(j2, surpus)
             a.append(surpus)
 
     _ = plt.hist(a, bins='auto')
     plt.show()
-
-
 
 
 def draw_gmm_results(dataset_name, cov_type='tied'):
@@ -579,17 +565,17 @@ def draw_gmm_results(dataset_name, cov_type='tied'):
     with open(f'{name}_inter_info.npy', 'rb') as f:
         inter_info = np.load(f)
 
-    a = inter_info[:,0]
+    a = inter_info[:, 0]
     data = np.transpose(data, (1, 0))
 
     if False:
-        a = -a-logsumexp(-a)
+        a = -a - logsumexp(-a)
         n, m = data.shape[:2]
         for j in range(m):
-            data[:, j] -= logsumexp(data[:,j])
+            data[:, j] -= logsumexp(data[:, j])
         mean_ary = []
         for i in range(n):
-            avg = logsumexp(data[i,:])-np.log(m)
+            avg = logsumexp(data[i, :]) - np.log(m)
             mean_ary.append(avg)
 
         x, y = a, mean_ary
@@ -608,29 +594,24 @@ def draw_gmm_results(dataset_name, cov_type='tied'):
         x, y = x[order], y[order]
 
         x, y = remove_outliers(x, y, n_bins=100)
-        x = (x-np.min(x))/(np.max(x)-np.min(x))
-        y = (y-np.min(y))/(np.max(y)-np.min(y))
-
+        x = (x - np.min(x)) / (np.max(x) - np.min(x))
+        y = (y - np.min(y)) / (np.max(y) - np.min(y))
 
     n_bins = 200
     yy, xx, _ = stats.binned_statistic(x, y, 'mean', bins=n_bins)
     ss, _, _ = stats.binned_statistic(x, y, 'std', bins=n_bins)
     yy = fill_nan(yy)
     ss = fill_nan(ss)
-    xxx = np.asarray([(xx[i]+xx[i+1])/2 for i in range(len(xx)-1)])
+    xxx = np.asarray([(xx[i] + xx[i + 1]) / 2 for i in range(len(xx) - 1)])
 
     ws = 21
     yyy = savitzky_golay(yy, window_size=ws, order=1)
     plt.plot(x, y, '.')
     plt.plot(xxx, yy)
     intl = 7
-    plt.errorbar(xxx[::intl],yyy[::intl],ss[::intl],marker='^')
+    plt.errorbar(xxx[::intl], yyy[::intl], ss[::intl], marker='^')
 
     plt.show()
-
-
-
-
 
 
 def main(dataset_name):
@@ -659,7 +640,7 @@ def main(dataset_name):
     y = std_mat.flatten()
     '''
 
-    a = inter_info[:,0]
+    a = inter_info[:, 0]
     # a = np.log(a)
 
     # x, y = a, max_std
@@ -677,8 +658,6 @@ def main(dataset_name):
     # yy = np.polyval(mm, x)
     # yy = savitzky_golay(y, window_size=1007, order=2)
 
-
-
     '''
     ws = 501
     yyy, err = savitzky_golay(y, window_size=ws, order=1, return_err=True)
@@ -693,14 +672,14 @@ def main(dataset_name):
     ss, _, _ = stats.binned_statistic(x, y, 'std', bins=n_bins)
     yy = fill_nan(yy)
     ss = fill_nan(ss)
-    xxx = np.asarray([(xx[i]+xx[i+1])/2 for i in range(len(xx)-1)])
+    xxx = np.asarray([(xx[i] + xx[i + 1]) / 2 for i in range(len(xx) - 1)])
 
     ws = 21
     yyy = savitzky_golay(yy, window_size=ws, order=1)
     plt.plot(x, y, '.')
     plt.plot(xxx, yy)
     intl = 7
-    plt.errorbar(xxx[::intl],yyy[::intl],ss[::intl],marker='^')
+    plt.errorbar(xxx[::intl], yyy[::intl], ss[::intl], marker='^')
     # '''
 
     plt.show()
@@ -727,9 +706,9 @@ def compare_benign_trojan(dataset, cov_type='tied'):
             model_paths[md] = list()
         model_paths[md].append(p)
 
-
     for md, p_list in model_paths.items():
-        if not md.startswith('resnet'): continue
+        if not md.startswith('resnet'):
+            continue
 
         n = len(p_list)
         for i in range(n):
@@ -824,7 +803,7 @@ if __name__ == '__main__':
     draw_gmm_results(dataset.name)
     # '''
 
-    # '''
+    '''
     kwargs['valid_batch_size'] = kwargs['batch_size']
     dataset = trojanvision.datasets.create(**kwargs)
     print('compare GMM info', dataset.name)
@@ -833,10 +812,15 @@ if __name__ == '__main__':
     compare_infos(dataset, folder_path)
     # '''
 
+    # '''
+    kwargs['valid_batch_size'] = kwargs['batch_size']
+    dataset = trojanvision.datasets.create(**kwargs)
+    print('compare benign trojan', dataset.name)
+    compare_benign_trojan(dataset, cov_type='tied')
+    # '''
 
     '''
     dataset = trojanvision.datasets.create(**kwargs)
     print('draw figure for', dataset.name)
     main(dataset.name)
     # '''
-
