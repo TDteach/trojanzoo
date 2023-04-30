@@ -44,8 +44,10 @@ class GSW_NN():
         Xslices = self.model(X.to(self.device))
         Yslices = self.model(Y.to(self.device))
 
-        Xslices = (Xslices.tanh() * 2.0 + 1.0) * 0.5
-        Yslices = (Yslices.tanh() * 2.0 + 1.0) * 0.5
+        # Xslices = (torch.tanh(Xslices * 2.0) + 1.0) * 0.5
+        # Yslices = (torch.tanh(Yslices * 2.0) + 1.0) * 0.5
+
+        return torch.nn.functional.l1_loss(torch.mean(Xslices), torch.mean(Yslices))
 
         Xslices_sorted = torch.sort(Xslices, dim=0)[0]
         Yslices_sorted = torch.sort(Yslices, dim=0)[0]
@@ -71,11 +73,13 @@ class GSW_NN():
             loss.backward(retain_graph=True)
             optimizer.step()
 
+            # '''
             for p in self.model.parameters():
                 #p.data.clamp_(-self.weight_cliping_limit, self.weight_cliping_limit)
                 if len(p.shape) > 1:
                     fn = torch.norm(p).item()
                     if fn > 1:
                         p.data /= fn
+            # '''
 
         return self.gsw(X.to(self.device), Y.to(self.device), random=False)

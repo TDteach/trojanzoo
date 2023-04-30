@@ -376,7 +376,10 @@ def remove_inf_nan(x, y):
     return np.asarray(nx), np.asarray(ny)
 
 
-def estimate_KL_from_samples(X, Y):
+
+
+#too large bias on high-dimensinoal space
+def estimate_Hellinger_from_samples(X, Y, k=100):
     n, dx = X.shape
     m, dy = Y.shape
     assert dx == dy
@@ -384,18 +387,56 @@ def estimate_KL_from_samples(X, Y):
 
     from sklearn.neighbors import NearestNeighbors
 
-    nbrs_X = NearestNeighbors(n_neighbors=2).fit(X)
-    nbrs_Y = NearestNeighbors(n_neighbors=1).fit(Y)
+    nbrs_X = NearestNeighbors(n_neighbors=k+1).fit(X)
+    nbrs_Y = NearestNeighbors(n_neighbors=k+1).fit(Y)
 
-    dist_X, _ = nbrs_X.kneighbors(X)
-    dist_Y, _ = nbrs_Y.kneighbors(X)
+    dist_X, _ = nbrs_X.kneighbors(X, k+1)
+    dist_Y, _ = nbrs_Y.kneighbors(X, k)
+    rho = dist_X[:, -1]
+    nu = dist_Y[:, -1]
 
-    print(dist_X.shape, dist_Y.shape)
-    exit(0)
+    dist1 = np.mean(np.square(1-np.sqrt(nu/rho))) * 0.5
 
-    logX = np.log(dist_X[:, 1])
-    logY = np.log(dist_Y[:, 0])
-    rst = d * np.mean(logX - logY) + np.log(m / (n - 1))
+
+    dist_X, _ = nbrs_X.kneighbors(Y, k)
+    dist_Y, _ = nbrs_Y.kneighbors(Y, k+1)
+    rho = dist_X[:, -1]
+    nu = dist_Y[:, -1]
+
+    dist2 = np.mean(np.square(1-np.sqrt(rho/nu))) * 0.5
+
+
+    return np.sqrt(min(dist1, dist2))
+
+
+
+
+
+#too large bias on high-dimensinoal space
+def estimate_KL_from_samples(X, Y, k=100):
+    n, dx = X.shape
+    m, dy = Y.shape
+    assert dx == dy
+    d = dx
+
+    from sklearn.neighbors import NearestNeighbors
+
+    nbrs_X = NearestNeighbors(n_neighbors=k+1).fit(X)
+    nbrs_Y = NearestNeighbors(n_neighbors=k).fit(Y)
+
+    dist_X, _ = nbrs_X.kneighbors(X, k+1)
+    dist_Y, _ = nbrs_Y.kneighbors(X, k)
+    rho = dist_X[:, -1]
+    nu = dist_Y[:, -1]
+    print(np.mean(rho))
+    print(np.mean(np.log(rho)))
+    print(np.mean(nu))
+    print(np.mean(np.log(nu)))
+
+    D = np.mean(np.log(nu) - np.log(rho))
+    rst = D + np.log(m / (n - 1))
+
+    rst = np.sqrt(abs(rst) * 0.5)
 
     return rst
 
@@ -473,8 +514,11 @@ def wasserstein_between_two_gm(model1, model2, gm1, gm2, dataset, use_double=Fal
     YY = torch.from_numpy(YY).float().cuda()
     nXX = trans(XX)
 
-    dist = estimate_KL_from_samples(nXX, YY)
-    return dist, trans
+    nXX -= torch.mean(nXX, dim=0, keepdim=True)
+    YY -= torch.mean(YY, dim=0, keepdim=True)
+
+    # dist = estimate_KL_from_samples(nXX.detach().cpu().numpy(), YY.cpu().numpy())
+    # return dist, trans
 
     w_model = GSW_NN(din=512, nofprojections=1, num_filters=128, model_depth=1)
 
@@ -486,7 +530,23 @@ def wasserstein_between_two_gm(model1, model2, gm1, gm2, dataset, use_double=Fal
 
     del w_model
 
-    return dist.sqrt().item(), trans
+    print('W1 distance', dist.item())
+    hd = estimate_Hellinger_from_samples(nXX.detach().cpu().numpy(), YY.detach().cpu().numpy(), k=5)
+    print('Hellinger distance', hd)
+    kl = estimate_KL_from_samples(nXX.detach().cpu().numpy(), YY.detach().cpu().numpy(), k=5)
+    print('KL divergence', kl)
+    kl = estimate_KL_from_samples(YY.detach().cpu().numpy(), nXX.detach().cpu().numpy(), k=5)
+    print('KL divergence', kl)
+
+    return dist.item(), trans
+
+
+def get_data_from_loader(loader, get_data_fn):
+    data_list = list()
+    for data in loader:
+        x = get_data_fn(data)[0]
+        data_list.append(x.detach().cpu().numpy())
+    return np.concatenate(data_list, axis=0)
 
 
 def get_fm_from_loader(model, loader, get_data_fn):
@@ -526,6 +586,9 @@ def compare_infos(dataset, folder_path, cov_type='tied'):
 
             all_fm[md].append((p_gm, f, folder_path))
 
+            # if i ==1: break
+
+    a = list()
     rst_dict = dict()
     for md, fm_list in all_fm.items():
         if not md.startswith('resnet'): continue
@@ -537,6 +600,9 @@ def compare_infos(dataset, folder_path, cov_type='tied'):
             pp, pm, fd = fm_list[i]
             with open(pp, 'rb') as fh:
                 gm = pickle.load(fh)
+
+            a.append(np.linalg.norm(gm.covariances_))
+            continue
 
             model = load_model_from_path(pm, fd, dataset, kwargs)
             model.eval()
@@ -550,7 +616,6 @@ def compare_infos(dataset, folder_path, cov_type='tied'):
                 _model.eval()
 
                 dist, trans = wasserstein_between_two_gm(model, _model, gm, _gm, dataset, use_double=False)
-                # dist, trans = wasserstein_between_two_gm(train_fm, _train_fm, gm, _gm)
                 print(i, j, dist)
 
                 trans.eval()
@@ -562,7 +627,21 @@ def compare_infos(dataset, folder_path, cov_type='tied'):
 
                 rst_dict[md][(pp, _pp)] = rst
 
-    # exit(0)
+    a = 1/np.asarray(a)
+
+    mean_a = np.mean(a)
+    std_a = np.std(a)
+    aa = np.random.normal(mean_a, std_a, 2000)
+    a = np.concatenate([a,aa])
+    print(len(a))
+    hist, bins = np.histogram(a, bins=100)
+    plt.bar((bins[:-1]+bins[1:])/2, hist/len(a)*100)
+    plt.xlim(0,5)
+    plt.ylim(0,10)
+    plt.xlabel('Norm of covariance matrix')
+    plt.ylabel('Percentage (%)')
+    plt.show()
+    exit(0)
 
     with open('benign_models_between.pkl', 'wb') as fh:
         pickle.dump(rst_dict, fh)
@@ -667,8 +746,10 @@ def draw_gmm_results(dataset_name, cov_type='tied'):
         x, y = x[order], y[order]
 
         x, y = remove_outliers(x, y, n_bins=100)
-        x = (x - np.min(x)) / (np.max(x) - np.min(x))
-        y = (y - np.min(y)) / (np.max(y) - np.min(y))
+        minx, maxx = np.min(x), np.max(x)
+        x = (x - minx)/(maxx-minx) * maxx
+        miny, maxy = np.min(y), np.max(y)
+        y = (y - miny)/(maxy-miny) * maxx
 
     n_bins = 200
     yy, xx, _ = stats.binned_statistic(x, y, 'mean', bins=n_bins)
@@ -679,11 +760,15 @@ def draw_gmm_results(dataset_name, cov_type='tied'):
 
     ws = 21
     yyy = savitzky_golay(yy, window_size=ws, order=1)
-    plt.plot(x, y, '.')
-    plt.plot(xxx, yy)
+    # plt.figure(figsize=(3,2.5))
+    h1 = plt.plot(x, y, '.', label='x')
+    h2 = plt.plot(xxx, yy, label='fitted curve')
     intl = 7
-    plt.errorbar(xxx[::intl], yyy[::intl], ss[::intl], marker='^')
+    plt.errorbar(xxx[::intl], yyy[::intl], ss[::intl], marker='^', mfc='red', mec='green')
 
+    plt.xlabel('-ln(Pr(x))')
+    plt.ylabel('-ln(Pr(z(x)))')
+    plt.legend(['x','Fitted curve', 'Std'])
     plt.show()
 
 
@@ -698,8 +783,10 @@ def main(dataset_name):
     print(inter_info.shape)
 
     data = np.transpose(data, (1, 2, 0))
+    print(data.shape)
     std_mat = np.std(data, axis=-1)
     mean_mat = np.mean(data, axis=-1)
+    max_mean = np.max(mean_mat, axis=-1)
     max_std = np.max(std_mat, axis=-1)
     min_std = np.min(std_mat, axis=-1)
     mean_std = np.mean(std_mat, axis=-1)
@@ -717,9 +804,41 @@ def main(dataset_name):
     # a = np.log(a)
 
     # x, y = a, max_std
-    x, y = a, mean_std
+    x, y = a, max_mean
+    # x, y = a, mean_std
 
     x, y = remove_inf_nan(x, y)
+
+
+    # '''
+    order = np.argsort(y)
+    x, y = x[order], y[order]
+    total = logsumexp(x)
+
+    z = list()
+    ct = None
+    for _x in x:
+        if ct is None:
+            ct = _x
+        else:
+            ct = logsumexp([ct,_x])
+
+        z.append(np.exp(ct-total))
+    t = 0.45
+    for i in range(len(y)):
+        if y[i] > t:
+            y[i] = t+np.tanh((y[i]-t)*15)*(1-t)
+    plt.plot(y, z)
+    plt.xlim(0,1)
+    plt.ylim(0,1)
+    plt.xlabel('Max_y Pr(y|x)')
+    plt.ylabel('Probability (CDF)')
+    plt.show()
+    exit(0)
+    # '''
+
+
+
 
     order = np.argsort(x)
     x, y = x[order], y[order]
@@ -806,6 +925,47 @@ def compare_benign_trojan(dataset, cov_type='tied'):
             del trojan_model
 
 
+
+def calc_input_space_distance(dataset):
+    get_data_fn = dataset.get_data
+    tr_loader = dataset.loader['train']
+    vl_loader = dataset.loader['valid']
+    tr_data = get_data_from_loader(tr_loader, get_data_fn)
+    vl_data = get_data_from_loader(vl_loader, get_data_fn)
+
+    n_vl = len(vl_data)
+    n_tr = len(tr_data)
+
+    tr_data = np.reshape(tr_data, (n_tr, -1))
+    vl_data = np.reshape(vl_data, (n_vl, -1))
+    print(tr_data.shape)
+    print(vl_data.shape)
+
+    dist = estimate_Hellinger_from_samples(tr_data[:n_vl], tr_data[-n_vl:], k=20)
+    print('Hellinger distance between train and train', dist)
+
+    dist = estimate_Hellinger_from_samples(tr_data[:n_vl], vl_data, k=20)
+    print('Hellinger distance between train and valid', dist)
+
+
+    kl = estimate_KL_from_samples(tr_data[:n_vl], tr_data[-n_vl:], k=20)
+    print('KL between train and train', kl)
+
+    kl = estimate_KL_from_samples(tr_data[:n_vl], vl_data, k=20)
+    print('KL between train and valid', kl)
+
+    w_model = GSW_NN(din=vl_data.shape[1], nofprojections=1, num_filters=128, model_depth=1)
+
+    X_tensor = torch.from_numpy(tr_data).float().cuda()
+    Y_tensor = torch.from_numpy(vl_data).float().cuda()
+
+    dist = w_model.max_gsw(X_tensor[:n_vl], X_tensor[-n_vl:], iterations=10000)
+    print('W1 distance between train and train', dist.item())
+
+    dist = w_model.max_gsw(X_tensor[:n_vl], Y_tensor, iterations=10000)
+    print('W1 distance between train and valid', dist.item())
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     trojanvision.environ.add_argument(parser)
@@ -874,7 +1034,7 @@ if __name__ == '__main__':
     draw_gmm_results(dataset.name)
     # '''
 
-    # '''
+    '''
     kwargs['valid_batch_size'] = kwargs['batch_size']
     dataset = trojanvision.datasets.create(**kwargs)
     print('compare GMM info', dataset.name)
@@ -886,11 +1046,20 @@ if __name__ == '__main__':
     '''
     kwargs['valid_batch_size'] = kwargs['batch_size']
     dataset = trojanvision.datasets.create(**kwargs)
+    print('calc input space distance', dataset.name)
+    calc_input_space_distance(dataset)
+    # '''
+
+
+
+    '''
+    kwargs['valid_batch_size'] = kwargs['batch_size']
+    dataset = trojanvision.datasets.create(**kwargs)
     print('compare benign trojan', dataset.name)
     compare_benign_trojan(dataset, cov_type='tied')
     # '''
 
-    '''
+    # '''
     dataset = trojanvision.datasets.create(**kwargs)
     print('draw figure for', dataset.name)
     main(dataset.name)
