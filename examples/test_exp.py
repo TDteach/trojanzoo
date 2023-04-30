@@ -228,7 +228,7 @@ def load_model_from_path(f, folder_path, dataset, kwargs):
     return model
 
 
-def get_GMM_models(dataset, folder_path, cov_type='tied'):
+def get_GMM_models(dataset, folder_path, cov_type='tied', out_folder='.'):
     name = dataset.name
 
     files = [f for f in os.listdir(folder_path) if re.search(r'.+\.pth$', f)]
@@ -239,7 +239,7 @@ def get_GMM_models(dataset, folder_path, cov_type='tied'):
         model.eval()
         with torch.no_grad():
             gm = get_GMM_for_model(dataset, model, cov_type)
-        pp = f'{cov_type}_{f}_gm.pkl'
+        pp = os.path.join(out_folder, f'{cov_type}_{f}_gm.pkl')
         with open(pp, 'wb') as fh:
             pickle.dump(gm, fh)
 
@@ -966,6 +966,64 @@ def calc_input_space_distance(dataset):
     print('W1 distance between train and valid', dist.item())
 
 
+def test_folder(folder_path, dataset):
+    name = dataset.name
+
+    get_GMM_models(dataset, folder_path, out_folder=folder_path)
+
+
+def compare_benign_trojan_folder(dataset, benign_folder, trojan_folder, cov_type='tied'):
+    name = dataset.name
+
+    get_GMM_models(dataset, benign_folder, out_folder=benign_folder)
+    get_GMM_models(dataset, trojan_folder, out_folder=trojan_folder)
+
+    def _find_model_paths(folder):
+        files = os.listdir(folder)
+        model_paths = dict()
+        for f in files:
+            if not f.endswith('_gm.pkl'):
+                continue
+            p = '_'.join(f.split('_')[1:-1])
+            model_paths.append(p)
+        return model_paths
+
+    benign_paths = _find_model_paths(benign_folder)
+    trojan_paths = _find_model_paths(trojan_folder)
+
+    rst = dict()
+    for bp in benign_paths:
+        for tp in trojan_paths:
+            benign_model = load_model_from_path(bp, benign_folder, dataset, kwargs)
+            benign_model.eval()
+            trojan_model = load_model_from_path(tp, trojan_folder, dataset, kwargs)
+            trojan_model.eval()
+
+            bpp = os.path.join(benign_folder, f'{cov_type}_{bp}_gm.pkl')
+            with open(bpp, 'rb') as fh:
+                bgm = pickle.load(fh)
+            tpp = os.path.join(trojan_folder, f'{cov_type}_{tp}_gm.pkl')
+            with open(tpp, 'rb') as fh:
+                tgm = pickle.load(fh)
+
+            dist, trans = wasserstein_between_two_gm(benign_model, trojan_model, bgm, tgm, dataset)
+            print(f'{bp} vs {tp}')
+            print(dist)
+
+            rst[(bp, tp)] = {
+                'dist': dist,
+                'trans': trans.state_dict(),
+            }
+
+            del benign_model
+            del trojan_model
+            del bgm
+            del tgm
+
+    with open(f'{benign_folder}_vs_{trojan_folder}.pkl', 'wb') as f:
+        pickle.dump(rst, f)
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     trojanvision.environ.add_argument(parser)
@@ -1059,8 +1117,17 @@ if __name__ == '__main__':
     compare_benign_trojan(dataset, cov_type='tied')
     # '''
 
-    # '''
+    '''
     dataset = trojanvision.datasets.create(**kwargs)
     print('draw figure for', dataset.name)
     main(dataset.name)
+    # '''
+   
+    # '''
+    kwargs['valid_batch_size'] = kwargs['batch_size']
+    dataset = trojanvision.datasets.create(**kwargs)
+    benign_folder = ''
+    trojan_folder = ''
+    print(f'compare benign folder {benign_folder} with trojan folder {trojan_folder} on', dataset.name)
+    compare_benign_trojan_folder(dataset, benign_folder, trojan_folder, cov_type='tied')
     # '''
