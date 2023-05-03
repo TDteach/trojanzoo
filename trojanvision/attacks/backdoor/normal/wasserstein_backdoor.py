@@ -8,6 +8,7 @@ from trojanzoo.utils.logger import MetricLogger
 from trojanzoo.utils.output import ansi, get_ansi_len, output_iter
 from trojanzoo.utils.data import TensorListDataset, sample_batch
 from trojanzoo.environ import env
+import trojanvision
 
 import torch
 import torch.nn as nn
@@ -17,6 +18,7 @@ from torch.utils.data import TensorDataset
 import math
 import random
 import numpy as np
+import copy
 
 from typing import TYPE_CHECKING
 import argparse
@@ -41,49 +43,33 @@ class WasserteinBackdoor(BackdoorAttack):
     @classmethod
     def add_argument(cls, group: argparse._ArgumentGroup):
         super().add_argument(group)
-        group.add_argument('--train_poison_epochs', type=int,
-                           help='epochs to train benign model with trigger in once iteration '
-                                '(default: 1)')
-        group.add_argument('--train_trigger_epochs', type=int,
-                           help='epochs to train trigger_generator in once iteration'
-                                '(default: 1)')
         group.add_argument('--step_one_iterations', type=int,
                            help='iterations of step one where poison_epoch and trigger_epoch alternatively run'
                                 '(default: 50)')
         group.add_argument('--step_two_iterations', type=int,
                            help='iterations of step two where only poison_epoch runs'
-                                '(default: 450)')
+                                '(default: 10)')
         group.add_argument('--pgd_eps', type=int,
                            help='|noise|_{\infinity} <= pgd_esp '
                                 '(default: 0.1)')
-        group.add_argument('--class_sample_num', type=int,
-                           help='sampled input number of each class '
-                                '(default: None)')
         return group
 
-    def __init__(self, class_sample_num: int = None,
-                 train_trigger_epochs: int = 1,
-                 train_poison_epochs: int = 1,
+    def __init__(self,
                  step_one_iterations: int = 50,
-                 step_two_iterations: int = 450,
+                 step_two_iterations: int = 10,
                  pgd_eps: float = 0.1,
                  **kwargs):
         super().__init__(**kwargs)
 
-        self.param_list['wasserstein_backdoor'] = ['class_sample_num',
-                                                   'train_trigger_epochs', 'train_poison_epochs',
-                                                   'step_one_iterations', 'step_two_iterations', 'pgd_eps']
-        self.class_sample_num = class_sample_num
-        self.train_poison_epochs = train_poison_epochs
-        self.train_trigger_epochs = train_trigger_epochs
+        self.param_list['wasserstein_backdoor'] = ['step_one_iterations', 'step_two_iterations', 'pgd_eps']
         self.step_one_iterations = step_one_iterations
         self.step_two_iterations = step_two_iterations
         self.pgd_eps = pgd_eps
 
         self.device = env['device']
 
-        data_channel = self.dataset.data_shape[0]
-        image_size = self.dataset.data_shape[1]
+        # data_channel = self.dataset.data_shape[0]
+        # image_size = self.dataset.data_shape[1]
         # self.trigger_generator = self.get_trigger_generator(in_channels=data_channel, image_size=image_size)
         self.atkmodel = UNet(3).to(self.device)
         self.tgtmodel = UNet(3).to(self.device)
@@ -99,24 +85,25 @@ class WasserteinBackdoor(BackdoorAttack):
 
     def step_one(self, **kwargs):
         train_loader = self.dataset.get_dataloader(mode='train')
+        # train_loader = self.dataset.get_dataloader(mode='valid')
         test_loader = self.dataset.get_dataloader(mode='valid')
 
-        basepath = 'haha'
-        if not os.path.exists(basepath):
-            print(f'Creating new model training in {basepath}')
-            os.makedirs(basepath)
+        basepath = self.folder_path
+        # if not os.path.exists(basepath):
+        #     print(f'Creating new model training in {basepath}')
+        #     os.makedirs(basepath)
         checkpoint_path = os.path.join(basepath, 'checkpoint.ckpt')
         bestmodel_path = os.path.join(basepath, 'bestmodel.ckpt')
 
         params = {
             'device': 'cuda',
-            'batch_size': 64,
-            'epochs': 10,
+            'batch_size': 128,
+            'epochs': self.step_one_iterations,
             'lr': 0.01,
             'lr_atk': 0.0005,
             'train_epoch': 1,
             'target_label': 0,
-            'eps': 0.1,
+            'eps': self.pgd_eps,
             'alpha': 0.5,
             'attack_portion': 1.0,
             'epochs_per_external_eval': 10,
@@ -138,10 +125,11 @@ class WasserteinBackdoor(BackdoorAttack):
         tgtmodel = self.tgtmodel
         tgtoptimizer = self.tgtoptimizer
         clsmodel = self.model._model
+        model_name = self.model.name
 
         if True:
             writer = None
-            target_transform = get_target_transform()
+            target_transform = get_target_transform(self.target_class)
             clip_image = get_clip_image()
             clsoptimizer = kwargs['optimizer']
             for epoch in range(start_epoch, args.epochs + 1):
@@ -155,12 +143,15 @@ class WasserteinBackdoor(BackdoorAttack):
                                       post_transforms=post_transforms)
                     trainlosses.append(trainloss)
                 atkmodel.load_state_dict(tgtmodel.state_dict())
-                if not avoid_cls_reinit:
+                if not args.avoid_cls_reinit:
                     # clsmodel = create_net().to(args.device)
                     # scratchmodel = create_net().to(args.device)
                     pass
                 else:
-                    scratchmodel = copy.deepcopy(clsmodel)  # transfer from cls to scratch for testing
+                    zz = clsmodel.__class__
+                    scratchmodel = zz(name=model_name, dataset=self.dataset, num_classes=clsmodel.num_classes).to(
+                        args.device)
+                    scratchmodel.load_state_dict(clsmodel.state_dict())  # transfer from cls to scratch for testing
 
                 if epoch % args.epochs_per_external_eval == 0 or epoch == args.epochs:
                     acc_clean, acc_poison = test(args, atkmodel, scratchmodel, target_transform,
@@ -204,15 +195,17 @@ class WasserteinBackdoor(BackdoorAttack):
         return ret
 
     def train_poison_model(self, **kwargs):
-        self.trigger_generator.eval()
+        self.atkmodel.eval()
         self.model.train()
         ret = super().attack(**kwargs)
         return ret
 
     def get_trigger_noise(self, _input: torch.Tensor) -> torch.Tensor:
-        raw_output = self.trigger_generator(_input)
-        trigger_output = raw_output.tanh() / 2.0 + 0.5
-        return trigger_output - _input
+        noise = self.atkmodel(_input)
+        return noise
+        # raw_output = self.trigger_generator(_input)
+        # trigger_output = raw_output.tanh() / 2.0 + 0.5
+        # return trigger_output - _input
 
     def train_trigger_generator(self, other_loader, verbose: bool = True):
 
@@ -301,7 +294,7 @@ class WasserteinBackdoor(BackdoorAttack):
         r"""Save attack results to files."""
         filename = filename or self.get_filename(**kwargs)
         file_path = os.path.join(self.folder_path, filename)
-        torch.save(self.trigger_generator.state_dict(), file_path + '_trigger.pth')
+        torch.save(self.atkmodel.state_dict(), file_path + '_trigger.pth')
         self.model.save(file_path + '.pth')
         self.save_params(file_path + '.yaml')
         print('attack results saved at: ', file_path)
@@ -310,7 +303,7 @@ class WasserteinBackdoor(BackdoorAttack):
         r"""Load attack results from previously saved files."""
         filename = filename or self.get_filename(**kwargs)
         file_path = os.path.join(self.folder_path, filename)
-        self.trigger_generator.load_state_dict(torch.load(file_path + '_trigger.pth'))
+        self.atkmodel.load_state_dict(torch.load(file_path + '_trigger.pth'))
         self.model.load(file_path + '.pth')
         self.load_params(file_path + '.yaml')
         print('attack results loaded from: ', file_path)
@@ -412,8 +405,8 @@ def get_clip_image():
     return _clip_image
 
 
-def get_target_transform():
-    def _all2one(x, attack_target=1):
+def get_target_transform(_attack_target=1):
+    def _all2one(x, attack_target=_attack_target):
         return torch.ones_like(x) * attack_target
 
     return _all2one
@@ -508,6 +501,7 @@ def test(args, atkmodel, scratchmodel, target_transform,
         args.test_eps = args.eps
 
     atkmodel.eval()
+    scratchmodel.train()
 
     if testoptimizer is None:
         testoptimizer = optim.SGD(scratchmodel.parameters(), lr=args.lr)
@@ -525,8 +519,8 @@ def test(args, atkmodel, scratchmodel, target_transform,
                     atkdata = atkdata[:int(args.attack_portion * bs)]
                     atktarget = atktarget[:int(args.attack_portion * bs)]
 
-            atkoutput, _ = scratchmodel(atkdata)
-            output, _ = scratchmodel(data)
+            atkoutput = scratchmodel(atkdata)
+            output = scratchmodel(data)
 
             loss_clean = loss_fn(output, target)
             loss_poison = loss_fn(atkoutput, atktarget)
@@ -554,7 +548,7 @@ def test(args, atkmodel, scratchmodel, target_transform,
                 for data, target in test_loader:
                     bs = data.size(0)
                     data, target = data.to(args.device), target.to(args.device)
-                    output, _ = scratchmodel(data)
+                    output = scratchmodel(data)
                     test_loss += loss_fn(output, target).item() * bs  # sum up batch loss
                     pred = output.max(1, keepdim=True)[
                         1]  # get the index of the max log-probability
@@ -562,7 +556,7 @@ def test(args, atkmodel, scratchmodel, target_transform,
 
                     noise = atkmodel(data) * args.test_eps
                     atkdata = clip_image(data + noise)
-                    atkoutput, _ = scratchmodel(atkdata)
+                    atkoutput = scratchmodel(atkdata)
                     test_transform_loss += loss_fn(atkoutput, target_transform(target)).item() * bs  # sum up batch loss
                     atkpred = atkoutput.max(1, keepdim=True)[
                         1]  # get the index of the max log-probability
@@ -705,6 +699,6 @@ class UNet(nn.Module):
 
         out = self.conv_last(x)
 
-        out = F.tanh(out)
+        out = torch.tanh(out)
 
         return out
