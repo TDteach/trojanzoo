@@ -190,7 +190,7 @@ class WasserteinBackdoor(BackdoorAttack):
         #     self.train_poison_model(**kwargs)
         #     self.train_trigger_generator(other_loader)
         print('Step two')
-        kwargs['epochs'] = self.train_poison_epochs * self.step_two_iterations
+        kwargs['epochs'] = self.step_two_iterations
         ret = self.train_poison_model(**kwargs)
         return ret
 
