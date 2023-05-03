@@ -1,3 +1,6 @@
+# python3 ./examples/backdoor_attack.py --color --verbose 1 --pretrained --dataset cifar10 --model resnet18_comp --attack wasserstein_backdoor --lr 0.01 --save --batch_size 128 --weight_decay 0
+
+
 import torch.nn as nn
 import torchvision
 import os
