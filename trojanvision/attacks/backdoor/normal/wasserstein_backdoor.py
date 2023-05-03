@@ -484,11 +484,10 @@ def train(args, atkmodel, tgtmodel, clsmodel, tgtoptimizer, clsoptimizer, target
         writer.add_scalar('train/loss(atk)', atkloss,
                           global_step=(epoch - 1) * args.train_epoch + train_epoch)
 
-    batch_img = torch.cat(
-        [data[:16].clone().cpu(), noise[:16].clone().cpu(), atkdata[:16].clone().cpu()], 0)
-    batch_img = F.upsample(batch_img, scale_factor=(4, 4))
-    grid = torchvision.utils.make_grid(batch_img, normalize=True)
-    if writer is not None:
+        batch_img = torch.cat(
+            [data[:16].clone().cpu(), noise[:16].clone().cpu(), atkdata[:16].clone().cpu()], 0)
+        batch_img = F.interpolate(batch_img, scale_factor=(4, 4))
+        grid = torchvision.utils.make_grid(batch_img, normalize=True)
         writer.add_image("Train Images", grid, global_step=(epoch - 1) * args.train_epoch + train_epoch)
 
     return atkloss
@@ -588,7 +587,7 @@ def test(args, atkmodel, scratchmodel, target_transform,
 
         batch_img = torch.cat(
             [data[:16].clone().cpu(), noise[:16].clone().cpu(), atkdata[:16].clone().cpu()], 0)
-        batch_img = F.upsample(batch_img, scale_factor=(4, 4))
+        batch_img = F.interpolate(batch_img, scale_factor=(4, 4))
         grid = torchvision.utils.make_grid(batch_img, normalize=True)
         writer.add_image(f"{log_prefix}-Test Images", grid, global_step=(epoch - 1))
 
