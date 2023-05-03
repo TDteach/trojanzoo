@@ -27,6 +27,7 @@ class MLP(nn.Module):
                 self.features.add_module('linear%02d' % (i + 1),
                                          nn.Linear(self.init_num_filters, self.init_num_filters))
             self.features.add_module('activation%02d' % (i + 1), nn.LeakyReLU(inplace=True))
+            # self.features.add_module('activation%02d' % (i + 1), nn.ReLU(inplace=True))
 
         self.features.add_module('linear%02d' % (i + 2), nn.Linear(self.init_num_filters, self.dout))
 

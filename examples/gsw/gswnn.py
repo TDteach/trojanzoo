@@ -5,7 +5,7 @@ from .mlp import MLP
 
 
 class GSW_NN():
-    def __init__(self, din=2, nofprojections=1, model_depth=3, num_filters=32, use_cuda=True):
+    def __init__(self, din=2, nofprojections=1, model_depth=1, num_filters=32, use_cuda=True):
 
         self.nofprojections = nofprojections
 
@@ -49,12 +49,12 @@ class GSW_NN():
 
         return torch.nn.functional.l1_loss(torch.mean(Xslices), torch.mean(Yslices))
 
-        Xslices_sorted = torch.sort(Xslices, dim=0)[0]
-        Yslices_sorted = torch.sort(Yslices, dim=0)[0]
+        # Xslices_sorted = torch.sort(Xslices, dim=0)[0]
+        # Yslices_sorted = torch.sort(Yslices, dim=0)[0]
 
         # return torch.sqrt(torch.mean((Xslices_sorted - Yslices_sorted) ** 2))
         # return torch.mean((Xslices_sorted - Yslices_sorted) ** 2)
-        return torch.nn.functional.l1_loss(Xslices_sorted, Yslices_sorted)
+        # return torch.nn.functional.l1_loss(Xslices_sorted, Yslices_sorted)
 
     def max_gsw(self, X, Y, iterations=50, lr=1e-4):
         N, dn = X.shape

@@ -4,15 +4,18 @@ import os
 import re
 import time
 import math
+import pickle
+import copy
 
 import numpy as np
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 import scipy
 from scipy import stats
-import pickle
-
 from scipy.special import logsumexp
+
+from sklearn.mixture import GaussianMixture
+from sklearn.neighbors import NearestNeighbors
 
 import torch
 import torch.nn.functional as F
@@ -114,14 +117,12 @@ def get_GMM_for_model(dataset, model, covariance_type='tied'):
         final_fm = model.get_final_fm(x)
         fm_list.append(final_fm.detach().cpu().numpy())
     fm_list = np.concatenate(fm_list, axis=0)
-    print(fm_list.shape, model.num_classes)
+    # print(fm_list.shape, model.num_classes)
 
     X = fm_list
-    from sklearn.mixture import GaussianMixture
-    # gm = GaussianMixture(n_components=model.num_classes, random_state=0, max_iter=500, verbose=2, tol=1e-4, covariance_type='diag').fit(X)
     gm = GaussianMixture(n_components=model.num_classes, random_state=0, max_iter=500, verbose=2, tol=1e-4,
                          covariance_type=covariance_type).fit(X)
-    print(gm.means_.shape)
+    # print(gm.means_.shape)
 
     return gm
 
@@ -219,8 +220,13 @@ def get_model_name_from_path(f):
     return model_name
 
 
-def load_model_from_path(f, folder_path, dataset, kwargs):
-    model_name = get_model_name_from_path(f)
+def load_model_from_path(f, folder_path, dataset, kwargs, model_arch=None):
+    if model_arch is not None:
+        model_name = model_arch
+    elif 'model_name' in kwargs:
+        model_name = kwargs['model_name']
+    else:
+        model_name = get_model_name_from_path(f)
     kwargs['model_name'] = model_name
     model = trojanvision.models.create(dataset=dataset, **kwargs)
     path = os.path.join(folder_path, f)
@@ -228,18 +234,21 @@ def load_model_from_path(f, folder_path, dataset, kwargs):
     return model
 
 
-def get_GMM_models(dataset, folder_path, cov_type='tied', out_folder='.'):
+def get_GMM_models(dataset, folder_path, cov_type='tied', out_folder='.', replace=False):
     name = dataset.name
 
     files = [f for f in os.listdir(folder_path) if re.search(r'.+\.pth$', f)]
     files = sorted(files)
     for f in tqdm(files):
         print(f)
+        pp = os.path.join(out_folder, f'{cov_type}_{f}_gm.pkl')
+        if os.path.exists(pp) and not replace:
+            print('GMM model exists', pp)
+            continue
         model = load_model_from_path(f, folder_path, dataset, kwargs)
         model.eval()
         with torch.no_grad():
             gm = get_GMM_for_model(dataset, model, cov_type)
-        pp = os.path.join(out_folder, f'{cov_type}_{f}_gm.pkl')
         with open(pp, 'wb') as fh:
             pickle.dump(gm, fh)
 
@@ -376,16 +385,45 @@ def remove_inf_nan(x, y):
     return np.asarray(nx), np.asarray(ny)
 
 
-
-
-#too large bias on high-dimensinoal space
-def estimate_Hellinger_from_samples(X, Y, k=100):
+def estimate_TV_from_samples(X, Y, k=100, return_both=False):
     n, dx = X.shape
     m, dy = Y.shape
     assert dx == dy
     d = dx
 
-    from sklearn.neighbors import NearestNeighbors
+
+    nbrs_X = NearestNeighbors(n_neighbors=k+1).fit(X)
+    nbrs_Y = NearestNeighbors(n_neighbors=k+1).fit(Y)
+
+    dist_X, _ = nbrs_X.kneighbors(X, k+1)
+    dist_Y, _ = nbrs_Y.kneighbors(X, k)
+    rho = dist_X[:, -1]
+    nu = dist_Y[:, -1]
+
+    dist1 = np.mean(np.abs(1-nu/rho))
+
+
+    dist_X, _ = nbrs_X.kneighbors(Y, k)
+    dist_Y, _ = nbrs_Y.kneighbors(Y, k+1)
+    rho = dist_X[:, -1]
+    nu = dist_Y[:, -1]
+
+    dist2 = np.mean(np.abs(1-rho/nu))
+
+
+    if return_both:
+        return dist1, dist2
+    else:
+        return min(dist1, dist2)
+
+
+
+
+def estimate_Hellinger_from_samples(X, Y, k=100, return_both=False):
+    n, dx = X.shape
+    m, dy = Y.shape
+    assert dx == dy
+    d = dx
 
     nbrs_X = NearestNeighbors(n_neighbors=k+1).fit(X)
     nbrs_Y = NearestNeighbors(n_neighbors=k+1).fit(Y)
@@ -406,7 +444,10 @@ def estimate_Hellinger_from_samples(X, Y, k=100):
     dist2 = np.mean(np.square(1-np.sqrt(rho/nu))) * 0.5
 
 
-    return np.sqrt(min(dist1, dist2))
+    if return_both:
+        return np.sqrt(dist1), np.sqrt(dist2)
+    else:
+        return np.sqrt(min(dist1, dist2))
 
 
 
@@ -419,8 +460,6 @@ def estimate_KL_from_samples(X, Y, k=100):
     assert dx == dy
     d = dx
 
-    from sklearn.neighbors import NearestNeighbors
-
     nbrs_X = NearestNeighbors(n_neighbors=k+1).fit(X)
     nbrs_Y = NearestNeighbors(n_neighbors=k).fit(Y)
 
@@ -428,10 +467,10 @@ def estimate_KL_from_samples(X, Y, k=100):
     dist_Y, _ = nbrs_Y.kneighbors(X, k)
     rho = dist_X[:, -1]
     nu = dist_Y[:, -1]
-    print(np.mean(rho))
-    print(np.mean(np.log(rho)))
-    print(np.mean(nu))
-    print(np.mean(np.log(nu)))
+    #print(np.mean(rho))
+    #print(np.mean(np.log(rho)))
+    #print(np.mean(nu))
+    #print(np.mean(np.log(nu)))
 
     D = np.mean(np.log(nu) - np.log(rho))
     rst = D + np.log(m / (n - 1))
@@ -443,10 +482,12 @@ def estimate_KL_from_samples(X, Y, k=100):
 
 
 
-def wasserstein_between_two_gm(model1, model2, gm1, gm2, dataset, use_double=False):
+def wasserstein_between_two_gm(model1, model2, gm1, gm2, dataset, use_double=False, return_others=False):
     trans = MLP(din=512, dout=512, num_filters=512, depth=1)
     # w = trans.features.linear01.weight
-    optim = torch.optim.Adam(trans.parameters(), lr=1e-3, betas=(0.5, 0.99), weight_decay=1e-5)
+    # optim = torch.optim.Adam(trans.parameters(), lr=5e-3, betas=(0.5, 0.99))
+    optim = torch.optim.Adam(trans.parameters(), lr=5e-3)
+    # optim = torch.optim.SGD(trans.parameters(), lr=1e-3)
     trans.cuda()
 
     # X = torch.from_numpy(X1).float().cuda()
@@ -460,10 +501,13 @@ def wasserstein_between_two_gm(model1, model2, gm1, gm2, dataset, use_double=Fal
     model1.eval()
     model2.eval()
 
+    print('zzzzzzzzzzzzz')
     loader = dataset.loader['train']
 
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optim, len(loader)*num_epochs)
 
+    best_loss = None
+    best_weight = None
     for epoch in tqdm(range(num_epochs)):
         for data in loader:
             x = dataset.get_data(data)[0]
@@ -485,16 +529,22 @@ def wasserstein_between_two_gm(model1, model2, gm1, gm2, dataset, use_double=Fal
             else:
                 nx = nx
 
-            with torch.no_grad():
-                z1 = model1.get_final_fm(nx)
-                z2 = model2.get_final_fm(nx)
+            z1 = model1.get_final_fm(nx)
+            z2 = model2.get_final_fm(nx)
             tz = trans(z1)
             loss = F.mse_loss(tz, z2)
+            # print(loss.item())
 
             optim.zero_grad()
             loss.backward()
             optim.step()
             scheduler.step()
+
+            if best_loss is None or loss.item() < best_loss:
+                best_loss = loss.item()
+                best_weight = copy.deepcopy(trans.state_dict())
+
+    trans.load_state_dict(best_weight)
 
     '''
 
@@ -512,13 +562,12 @@ def wasserstein_between_two_gm(model1, model2, gm1, gm2, dataset, use_double=Fal
     YY, _ = gm2.sample(10000)
     XX = torch.from_numpy(XX).float().cuda()
     YY = torch.from_numpy(YY).float().cuda()
-    nXX = trans(XX)
+    with torch.no_grad():
+        nXX = trans(XX)
 
     nXX -= torch.mean(nXX, dim=0, keepdim=True)
     YY -= torch.mean(YY, dim=0, keepdim=True)
 
-    # dist = estimate_KL_from_samples(nXX.detach().cpu().numpy(), YY.cpu().numpy())
-    # return dist, trans
 
     w_model = GSW_NN(din=512, nofprojections=1, num_filters=128, model_depth=1)
 
@@ -530,15 +579,27 @@ def wasserstein_between_two_gm(model1, model2, gm1, gm2, dataset, use_double=Fal
 
     del w_model
 
-    print('W1 distance', dist.item())
-    hd = estimate_Hellinger_from_samples(nXX.detach().cpu().numpy(), YY.detach().cpu().numpy(), k=5)
-    print('Hellinger distance', hd)
-    kl = estimate_KL_from_samples(nXX.detach().cpu().numpy(), YY.detach().cpu().numpy(), k=5)
-    print('KL divergence', kl)
-    kl = estimate_KL_from_samples(YY.detach().cpu().numpy(), nXX.detach().cpu().numpy(), k=5)
-    print('KL divergence', kl)
+    dist = dist.item() - 0.02
+    dist = max(dist, 0)
+    print('W1 distance', dist)
+    # print('W1 distance', dist-loss.item())
+    # print('W1 distance', dist-torch.sqrt(loss).item())
 
-    return dist.item(), trans
+    if return_others:
+        nXX_numpy = nXX.detach().cpu().numpy()
+        YY_numpy = YY.detach().cpu().numpy()
+
+        tv1, tv2 = estimate_TV_from_samples(nXX_numpy, YY_numpy, k=20, return_both=True)
+        print('Total variance distance', tv1, tv2)
+        hd1, hd2 = estimate_Hellinger_from_samples(nXX_numpy, YY_numpy, k=20, return_both=True)
+        print('Hellinger distance', hd1, hd2)
+        klp = estimate_KL_from_samples(nXX_numpy, YY_numpy, k=20)
+        kln = estimate_KL_from_samples(YY_numpy, nXX_numpy, k=20)
+        print('KL divergence', klp, kln)
+
+        return dist, trans, [tv1, tv2, hd1, hd2, klp, kln]
+    else:
+        return dist, trans
 
 
 def get_data_from_loader(loader, get_data_fn):
@@ -980,7 +1041,7 @@ def compare_benign_trojan_folder(dataset, benign_folder, trojan_folder, cov_type
 
     def _find_model_paths(folder):
         files = os.listdir(folder)
-        model_paths = dict()
+        model_paths = list()
         for f in files:
             if not f.endswith('_gm.pkl'):
                 continue
@@ -991,9 +1052,19 @@ def compare_benign_trojan_folder(dataset, benign_folder, trojan_folder, cov_type
     benign_paths = _find_model_paths(benign_folder)
     trojan_paths = _find_model_paths(trojan_folder)
 
-    rst = dict()
+    outp = f'{benign_folder}_vs_{trojan_folder}.pkl'
+    if os.path.exists(outp):
+        with open(outp,'rb') as fh:
+            rst = pickle.load(fh)
+    else:
+        rst = dict()
+
     for bp in benign_paths:
         for tp in trojan_paths:
+            if (bp,tp) in rst:
+                continue
+            if bp==tp: continue
+
             benign_model = load_model_from_path(bp, benign_folder, dataset, kwargs)
             benign_model.eval()
             trojan_model = load_model_from_path(tp, trojan_folder, dataset, kwargs)
@@ -1006,13 +1077,20 @@ def compare_benign_trojan_folder(dataset, benign_folder, trojan_folder, cov_type
             with open(tpp, 'rb') as fh:
                 tgm = pickle.load(fh)
 
-            dist, trans = wasserstein_between_two_gm(benign_model, trojan_model, bgm, tgm, dataset)
+            # dist, trans, others = wasserstein_between_two_gm(benign_model, trojan_model, bgm, tgm, dataset, return_others=True)
+            dist, trans, others = wasserstein_between_two_gm(trojan_model, benign_model, tgm, bgm, dataset, return_others=True)
             print(f'{bp} vs {tp}')
             print(dist)
 
             rst[(bp, tp)] = {
                 'dist': dist,
                 'trans': trans.state_dict(),
+                'tv_p': others[0],
+                'tv_n': others[1],
+                'hd_p': others[2],
+                'hd_n': others[3],
+                'kl_p': others[4],
+                'kl_n': others[5],
             }
 
             del benign_model
@@ -1020,8 +1098,38 @@ def compare_benign_trojan_folder(dataset, benign_folder, trojan_folder, cov_type
             del bgm
             del tgm
 
-    with open(f'{benign_folder}_vs_{trojan_folder}.pkl', 'wb') as f:
-        pickle.dump(rst, f)
+    with open(outp, 'wb') as fh:
+        pickle.dump(rst, fh)
+
+
+def read_compare_results(benign_folder, trojan_folder):
+    outp = f'{benign_folder}_vs_{trojan_folder}.pkl'
+    with open(outp, 'rb') as fh:
+        rst = pickle.load(fh)
+
+    col = None
+    org = dict()
+    for k, v in rst.items():
+        p1, p2 = k
+        if col is None:
+            col = list()
+            for kk in v.keys():
+                if kk == 'trans': continue
+                col.append(kk)
+
+        if p2 not in org:
+            org[p2] = {
+                'a': np.zeros(len(col)),
+                'n': 0,
+            }
+        a = np.zeros(len(col))
+        for i,kk in enumerate(col):
+            a[i] = v[kk]
+        org[p2]['a'] += a
+        org[p2]['n'] += 1
+
+    for k, v in org.items():
+        print(v['a']/v['n'], k)
 
 
 if __name__ == '__main__':
@@ -1122,12 +1230,14 @@ if __name__ == '__main__':
     print('draw figure for', dataset.name)
     main(dataset.name)
     # '''
-   
+
     # '''
     kwargs['valid_batch_size'] = kwargs['batch_size']
     dataset = trojanvision.datasets.create(**kwargs)
-    benign_folder = ''
-    trojan_folder = ''
+    benign_folder = 'test_benign_models'
+    trojan_folder = 'test_trojan_models'
+    # trojan_folder = 'test_benign_models'
     print(f'compare benign folder {benign_folder} with trojan folder {trojan_folder} on', dataset.name)
     compare_benign_trojan_folder(dataset, benign_folder, trojan_folder, cov_type='tied')
+    read_compare_results(benign_folder, trojan_folder)
     # '''
