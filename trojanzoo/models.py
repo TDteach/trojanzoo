@@ -149,10 +149,12 @@ class _Model(nn.Module):
             seq.add_module(f'fc{len(num_features):d}', nn.Linear(num_features[-1], num_classes))
         return seq
 
-    def forward(self, x: torch.Tensor, **kwargs) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, return_final_fm=False, **kwargs) -> torch.Tensor:
         r"""``x -> self.get_final_fm -> self.classifier -> return``"""
-        x = self.get_final_fm(x, **kwargs)
-        x = self.classifier(x)
+        fm = self.get_final_fm(x, **kwargs)
+        x = self.classifier(fm)
+        if return_final_fm:
+            return x, fm
         return x
 
     # TODO: combine with get_final_fm ? Consider GNN cases.
